@@ -97,6 +97,8 @@ GEMINI_MODELS = [
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-4-hydrogen",
 ]
 
 
@@ -155,7 +157,7 @@ def call_gemini_json(prompt: str) -> Any:
             except Exception as exc:
                 last_err = exc
                 print(f"[GEMINI WARN] {model_name} attempt {attempt + 1} failed: {exc}")
-                time.sleep(2)
+                time.sleep(3)
     raise last_err
 
 
@@ -183,9 +185,30 @@ INDIA & WORLD NEWS RSS:
 TECH BLOGS RSS:
 {json.dumps(tech_items[:35], ensure_ascii=False)}
 """
-    data = call_gemini_json(prompt)
-    major_news = data.get("major_news", [])[:3]
-    tech_queries = data.get("tech_queries", [])[:6]
+    try:
+        data = call_gemini_json(prompt)
+        major_news = data.get("major_news", [])[:3]
+        tech_queries = data.get("tech_queries", [])[:6]
+    except Exception as exc:
+        print(f"[FALLBACK] Gemini unavailable for RSS curation ({exc}); using direct RSS top items.")
+        major_news = [
+            {
+                "title": item["title"],
+                "source": item["source"],
+                "url": item["url"],
+                "why_viral": "Top trending headline from last 24h RSS.",
+            }
+            for item in news_items[:3]
+        ]
+        tech_queries = [
+            "AI news today",
+            "new AI tool launch",
+            "tech news today",
+            "innovation technology",
+            "OpenAI Google AI",
+            "Indian tech news",
+        ]
+
     if not tech_queries:
         tech_queries = ["AI news today", "new AI tool launch", "tech news today", "innovation technology"]
     return major_news, tech_queries
@@ -474,7 +497,18 @@ INSTAGRAM DATA:
 MAJOR INDIA/WORLD NEWS DATA:
 {json.dumps(major_news, ensure_ascii=False)}
 """
-    return call_gemini_json(prompt)
+    try:
+        return call_gemini_json(prompt)
+    except Exception as exc:
+        print(f"[FALLBACK] Gemini unavailable for script generation ({exc}); sending links & headlines.")
+        return {
+            "yt_short_title": yt_videos[0]["title"][:85] if yt_videos else "No qualifying YouTube video today",
+            "insta_short_title": insta_reels[0]["caption"][:85] if insta_reels else "No qualifying Instagram Reel today",
+            "news_short_title": major_news[0]["title"][:85] if major_news else "Top India & World News updated",
+            "script_insta": "[Gemini API temporarily busy (503). Check the Instagram links in your Gemini Tech Sheet.]",
+            "script_yt": "[Gemini API temporarily busy (503). Check the YouTube links in your Gemini Tech Sheet.]",
+            "script_news": "[Gemini API temporarily busy (503). Check the News links in your Gemini Tech Sheet.]",
+        }
 
 
 # =============================================================================
