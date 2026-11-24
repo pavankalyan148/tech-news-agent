@@ -92,7 +92,12 @@ INSTA_INDIA_NEWS_ACCOUNTS = [
 ]
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+]
 
 
 # =============================================================================
@@ -136,13 +141,22 @@ def parse_rss_last_24h(feeds: list[tuple[str, str]], max_per_feed: int = 8) -> l
 
 
 def call_gemini_json(prompt: str) -> Any:
-    """Ask Gemini for a strict JSON response and parse it safely."""
-    response = gemini_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config={"response_mime_type": "application/json"},
-    )
-    return json.loads(response.text)
+    """Ask Gemini for strict JSON with automatic retry & active model fallback."""
+    last_err: Exception | None = None
+    for model_name in GEMINI_MODELS:
+        for attempt in range(2):
+            try:
+                response = gemini_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"},
+                )
+                return json.loads(response.text)
+            except Exception as exc:
+                last_err = exc
+                print(f"[GEMINI WARN] {model_name} attempt {attempt + 1} failed: {exc}")
+                time.sleep(2)
+    raise last_err
 
 
 # =============================================================================
@@ -236,7 +250,6 @@ def search_youtube_candidates(queries: list[str], hours_back: int) -> list[dict[
     if not video_ids:
         return []
 
-    # Batch fetch statistics & duration (1 quota unit per 50 videos)
     videos: list[dict[str, Any]] = []
     for i in range(0, len(video_ids), 50):
         batch = video_ids[i : i + 50]
@@ -268,53 +281,6 @@ def search_youtube_candidates(queries: list[str], hours_back: int) -> list[dict[
     return videos
 
 
-def run_youtube_waterfall(queries: list[str]) -> tuple[list[dict[str, Any]], str]:
-    """
-    Exact waterfall:
-      Pass 1: 24h Long Videos (>60s), >=100K views, >=10 comments in last 3h
-      Pass 2: 24h Shorts (<=60s), >=250K views, >=20 comments in last 24h
-      Pass 3: 48h Long Videos (same rules), then 48h Shorts (same rules)
-    Returns (up to 3 videos, pass_label).
-    """
-    for window_hours in (24, 48):
-        candidates = search_youtube_candidates(queries, hours_back=window_hours)
-
-        # Long video check: >= 1 Lakh (100,000) views + >= 10 comments in last 3h
-        long_matches = []
-        for v in candidates:
-            if not v["is_short"] and v["views"] >= 100_000 and v["total_comments"] >= 10:
-                recent_3h = count_recent_yt_comments(v["id"], hours=3)
-                if recent_3h >= 10:
-                    v["recent_comments"] = f"{recent_3h} in last 3h"
-                    v["format"] = "Long Video"
-                    long_matches.append(v)
-                    if len(long_matches) >= 6:
-                        break
-        if long_matches:
-            return pick_3_yt_videos(long_matches), f"{window_hours}h Long (1L+ & 10+ comments/3h)"
-
-        # Shorts fallback: >= 250K views + >= 20 comments in last 24h
-        short_matches = []
-        for v in candidates:
-            if v["is_short"] and v["views"] >= 250_000 and v["total_comments"] >= 20:
-                recent_24h = count_recent_yt_comments(v["id"], hours=24)
-                if recent_24h >= 20:
-                    v["recent_comments"] = f"{recent_24h} in last 24h"
-                    v["format"] = "Short"
-                    short_matches.append(v)
-                    if len(short_matches) >= 6:
-                        break
-        if short_matches:
-            return pick_3_yt_videos(short_matches), f"{window_hours}h Shorts (250K+ & 20+ comments/24h)"
-
-    # Graceful fallback if nothing hit strict thresholds today
-    fallback = search_youtube_candidates(queries, hours_back=48)[:3]
-    for v in fallback:
-        v["recent_comments"] = f"{v['total_comments']} total"
-        v["format"] = "Short" if v["is_short"] else "Long Video"
-    return fallback, "48h Top Fallback (Thresholds not fully met)"
-
-
 def pick_3_yt_videos(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Prefer 3 videos on the same viral topic if available; else top 3 distinct topics."""
     if len(matches) <= 3:
@@ -337,6 +303,50 @@ VIDEOS:
     except Exception:
         pass
     return matches[:3]
+
+
+def run_youtube_waterfall(queries: list[str]) -> tuple[list[dict[str, Any]], str]:
+    """
+    Exact waterfall:
+      Pass 1: 24h Long Videos (>60s), >=100K views, >=10 comments in last 3h
+      Pass 2: 24h Shorts (<=60s), >=250K views, >=20 comments in last 24h
+      Pass 3: 48h Long Videos (same rules), then 48h Shorts (same rules)
+    Returns (up to 3 videos, pass_label).
+    """
+    for window_hours in (24, 48):
+        candidates = search_youtube_candidates(queries, hours_back=window_hours)
+
+        long_matches = []
+        for v in candidates:
+            if not v["is_short"] and v["views"] >= 100_000 and v["total_comments"] >= 10:
+                recent_3h = count_recent_yt_comments(v["id"], hours=3)
+                if recent_3h >= 10:
+                    v["recent_comments"] = f"{recent_3h} in last 3h"
+                    v["format"] = "Long Video"
+                    long_matches.append(v)
+                    if len(long_matches) >= 6:
+                        break
+        if long_matches:
+            return pick_3_yt_videos(long_matches), f"{window_hours}h Long (1L+ & 10+ comments/3h)"
+
+        short_matches = []
+        for v in candidates:
+            if v["is_short"] and v["views"] >= 250_000 and v["total_comments"] >= 20:
+                recent_24h = count_recent_yt_comments(v["id"], hours=24)
+                if recent_24h >= 20:
+                    v["recent_comments"] = f"{recent_24h} in last 24h"
+                    v["format"] = "Short"
+                    short_matches.append(v)
+                    if len(short_matches) >= 6:
+                        break
+        if short_matches:
+            return pick_3_yt_videos(short_matches), f"{window_hours}h Shorts (250K+ & 20+ comments/24h)"
+
+    fallback = search_youtube_candidates(queries, hours_back=48)[:3]
+    for v in fallback:
+        v["recent_comments"] = f"{v['total_comments']} total"
+        v["format"] = "Short" if v["is_short"] else "Long Video"
+    return fallback, "48h Top Fallback (Thresholds not fully met)"
 
 
 # =============================================================================
@@ -404,7 +414,6 @@ def run_instagram_pipeline() -> tuple[list[dict[str, Any]], str]:
     if tech_matches:
         return tech_matches[:3], "24h Tech/AI Reels (50K+ Likes)"
 
-    # Pass 2 Fallback: India Viral News Reels ONLY (>100K)
     news_raw = scrape_insta_reels_apify(INSTA_INDIA_NEWS_ACCOUNTS, results_per_user=3)
     news_candidates = []
     cutoff = NOW_UTC - timedelta(hours=24)
