@@ -5,13 +5,14 @@ Daily Viral Tech, AI, Geopolitics & Educational Outlier Agent (10:00 AM IST)
     * Small channel (<100K subs) with >100K views in 12-24h (Tech, AI, Global Viral, India Geopolitics)
     * >=10 comments in last 3 hours IGNORING creator's own comments
     * Cross-check if another creator uploaded the same topic with >=10K views (Long) or >=50K views (Short)
-- Instagram Educational & Viral Reels (Any Follower Count, Last 12h):
-    * No follower limit (1 to any followers), discovered via hashtags + curated handles
-    * Prioritizes high-like/play educational, tech, AI, geopolitics reels in last 12h
+- Instagram (6-8h US & India):
+    * Last 6-8 hours, >=30K plays, >=48 likes, >=10 comments
+    * Tech, AI, Geopolitics, and India/US viral news (prioritizing talking-head & faceless-voice creators)
+    * Any follower count (discovered via hashtags + starter handles)
 - Major Tech & Breakthrough News (Past 3 Days / 72h, Any Website with High Reaction):
     * Hacker News top-reacted stories + Google News + Major Tech Blogs
 - Updates Google Sheet ("Gemini Tech" -> Creatives tab) with 3 links per table
-- Prepends 3 single-topic @dr.dhairyam-style Tenglish scripts (~1,500 chars + Source URL) to Google Doc
+- Prepends 3 single-topic Dhairyam Tech (D.tech) Tenglish scripts (~1,500 chars + Source URL) to Google Doc
 - Sends short 3-point summary + Sheet/Doc links to Gmail
 """
 
@@ -73,9 +74,11 @@ INSTA_STARTER_HANDLES = [
     "beebomco",
     "varunmayya",
     "thinkschool",
+    "abhiandniyu",
     "mkbhd",
     "johnnyharris",
     "ai.for.everyone",
+    "ndtv",
 ]
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -187,7 +190,7 @@ def fetch_major_news_and_queries() -> tuple[list[dict[str, str]], list[str]]:
     combined = hn_items + rss_items
 
     prompt = f"""
-You are a senior tech & AI editor for @dr.dhairyam.
+You are a senior tech & AI editor for Dhairyam Tech (D.tech).
 From the past 3 days (72h) of stories below, pick ONLY the TOP 3 MAJOR tech, AI, science, or breakthrough stories that people are heavily reacting to (think: CEO changes at Nvidia/OpenAI, Tesla FSD V15, major math/AI breakthroughs like WSJ/Anthropic, etc. — skip minor gadget deals or routine listicles).
 
 Return JSON with two keys:
@@ -270,7 +273,7 @@ def count_non_creator_comments(video_id: str, creator_channel_id: str, hours: in
             top = item["snippet"]["topLevelComment"]["snippet"]
             author_id = (top.get("authorChannelId") or {}).get("value", "")
             if creator_channel_id and author_id == creator_channel_id:
-                continue  # Ignore creator's own comments
+                continue
             pub_dt = datetime.fromisoformat(top["publishedAt"].replace("Z", "+00:00"))
             if pub_dt >= cutoff:
                 recent_non_creator += 1
@@ -428,7 +431,6 @@ def run_youtube_waterfall(queries: list[str]) -> tuple[list[dict[str, Any]], str
     if outliers:
         return outliers[:3], "24h Outlier (<100K subs, >100K views, 10+ non-creator comments/3h)"
 
-    # 48h fallback with <100K subs prioritized
     candidates_48h = search_youtube_candidates(queries, hours_back=48)
     small_48h = [v for v in candidates_48h if 0 <= v["subscribers"] < 100_000][:3]
     chosen = small_48h if small_48h else candidates_48h[:3]
@@ -440,12 +442,15 @@ def run_youtube_waterfall(queries: list[str]) -> tuple[list[dict[str, Any]], str
 
 
 # =============================================================================
-# 3. INSTAGRAM EDUCATIONAL & VIRAL REELS (ANY FOLLOWER COUNT, LAST 12H)
+# 3. INSTAGRAM (6-8H US & INDIA: >=30K PLAYS, >=48 LIKES, >=10 COMMENTS)
 # =============================================================================
 def run_instagram_pipeline() -> tuple[list[dict[str, Any]], str]:
     """
-    Any follower count (1 to millions), last 12h window (24h fallback),
-    discovered via hashtags + starter handles, picking the 3 best educational/viral reels.
+    Exact Instagram rule:
+      - Last 6-8 hours (8h cutoff; 24h fallback if <3 matches)
+      - >= 30,000 plays AND >= 48 likes AND >= 10 comments
+      - Tech, AI, Geopolitics, and India/US viral news
+      - Prioritizes talking-head & faceless-voice creators (any follower count)
     """
     items: list[dict[str, Any]] = []
 
@@ -473,10 +478,10 @@ def run_instagram_pipeline() -> tuple[list[dict[str, Any]], str]:
     except Exception as exc:
         print(f"[APIFY REEL WARN] {exc}")
 
-    cutoff_12h = NOW_UTC - timedelta(hours=12)
+    cutoff_8h = NOW_UTC - timedelta(hours=8)
     cutoff_24h = NOW_UTC - timedelta(hours=24)
-    pool_12h: list[dict[str, Any]] = []
-    pool_24h: list[dict[str, Any]] = []
+    strict_8h: list[dict[str, Any]] = []
+    fallback_24h: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
 
     for item in items:
@@ -496,33 +501,39 @@ def run_instagram_pipeline() -> tuple[list[dict[str, Any]], str]:
         likes = int(item.get("likesCount") or 0)
         plays = int(item.get("videoPlayCount") or item.get("videoViewCount") or 0)
         comments = int(item.get("commentsCount") or 0)
-        rec = {
-            "owner": item.get("ownerUsername", ""),
-            "caption": (item.get("caption") or "").replace("\n", " ")[:220],
-            "likes": likes,
-            "plays": plays,
-            "comments": comments,
-            "url": reel_url,
-        }
-        if pub_dt is None or pub_dt >= cutoff_12h:
-            pool_12h.append(rec)
-        elif pub_dt >= cutoff_24h:
-            pool_24h.append(rec)
 
-    pool = pool_12h if len(pool_12h) >= 3 else (pool_12h + pool_24h)
+        if plays >= 30_000 and likes >= 48 and comments >= 10:
+            rec = {
+                "owner": item.get("ownerUsername", ""),
+                "caption": (item.get("caption") or "").replace("\n", " ")[:220],
+                "likes": likes,
+                "plays": plays,
+                "comments": comments,
+                "url": reel_url,
+            }
+            if pub_dt is None or pub_dt >= cutoff_8h:
+                strict_8h.append(rec)
+            elif pub_dt >= cutoff_24h:
+                fallback_24h.append(rec)
+
+    pool = strict_8h if len(strict_8h) >= 3 else (strict_8h + fallback_24h)
     if not pool:
-        return [], "No Instagram Reels found in last 24h"
+        return [], "No Insta reel 30K+ plays, 48+ likes & 10+ comments found"
 
-    pool.sort(key=lambda x: (x["likes"], x["plays"]), reverse=True)
-    label = "12h Educational/Viral Reels (Any Follower Count)" if len(pool_12h) >= 3 else "24h Educational/Viral Reels"
+    pool.sort(key=lambda x: (x["plays"], x["likes"]), reverse=True)
+    label = (
+        "6-8h US/India (30K+ plays, 48+ likes, 10+ cmts)"
+        if len(strict_8h) >= 3
+        else "24h Fallback (30K+ plays, 48+ likes, 10+ cmts)"
+    )
 
     if len(pool) <= 3:
         return pool, label
 
     prompt = f"""
-Pick the best 3 Instagram Reels from the candidates below (NO follower restriction):
-- Prioritize educational, tech, AI, science, or geopolitics Reels with massive likes/plays (e.g., 100K+ likes or highest engagement).
-- Avoid pure memes or unrelated entertainment.
+Select the best 3 Instagram Reels from the candidates below:
+- Topics: Tech, AI, Geopolitics, or India/US viral news
+- Format priority: Talking-head and faceless-voice explainers/news (avoid pure memes or unrelated entertainment)
 Return JSON: {{"selected_urls": ["url1", "url2", "url3"]}}
 
 CANDIDATES:
@@ -540,20 +551,23 @@ CANDIDATES:
 
 
 # =============================================================================
-# 4. GENERATE 3 SINGLE-TOPIC @DR.DHAIRYAM TENGLISH SCRIPTS (~1,500 CHARS + SOURCE)
+# 4. GENERATE 3 SINGLE-TOPIC DHAIRYAM TECH (1ST STYLE) SCRIPTS (~1,500 CHARS + SOURCE)
 # =============================================================================
 def generate_scripts_and_titles(
     yt_videos: list[dict[str, Any]],
     insta_reels: list[dict[str, Any]],
     major_news: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Write 3 separate single-topic @dr.dhairyam scripts (no mixing) + Source URLs."""
+    """
+    Write 3 separate single-topic scripts (NO mixing) in yesterday's 1st Dhairyam Tech
+    (D.tech) style (~1,500 chars each) with Source URL at the bottom.
+    """
     best_yt = yt_videos[0] if yt_videos else None
     best_insta = insta_reels[0] if insta_reels else None
     best_news = major_news[0] if major_news else None
 
     prompt = f"""
-You are the lead scriptwriter for the @dr.dhairyam page (Dhairyam Tech).
+You are the scriptwriter for Dhairyam Tech (D.tech).
 CRITICAL RULE: DO NOT MIX MULTIPLE STORIES!
 - "script_insta" must be ONLY about the single #1 Instagram Reel below.
 - "script_yt" must be ONLY about the single #1 YouTube Video below.
@@ -563,13 +577,15 @@ Return JSON with these exact keys:
 - "yt_short_title": crisp YouTube-title-style headline (under 85 chars) for #1 YouTube story.
 - "insta_short_title": crisp YouTube-title-style headline (under 85 chars) for #1 Instagram story.
 - "news_short_title": crisp YouTube-title-style headline (under 85 chars) for #1 Major Tech News story.
-- "script_insta": @dr.dhairyam Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
-- "script_yt": @dr.dhairyam Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
-- "script_news": @dr.dhairyam Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
+- "script_insta": Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
+- "script_yt": Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
+- "script_news": Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
 
-@DR.DHAIRYAM STYLE:
-- Conversational Telugu written strictly in English alphabet (Tenglish).
-- Curiosity-driven opening hook, clear keyword-focused storytelling, signature @dr.dhairyam CTA, and exact Source URL at the bottom.
+YESTERDAY'S 1ST STYLE (DHAIRYAM TECH / D.TECH):
+- Opening: Warm, energetic greeting ("Hello Dhairyam Tech family!" / "Namaskaram Dhairyam Tech (D.tech) viewers!" / "Namaste Dhairyam Tech (D.tech) audience!") followed immediately by a sharp hook.
+- Language: Natural conversational Telugu written strictly in English alphabet (Tenglish).
+- Body: Clear, keyword-rich explanation breaking down the exact verified facts and why it matters.
+- Closing: Engaging question to viewers + follow/subscribe CTA ("ventane follow avvandi / subscribe cheskondi, mee abhiprayam kinda comment cheyyandi!") + exact "Source: <URL>" at the bottom.
 
 #1 YOUTUBE: {json.dumps(best_yt, ensure_ascii=False)}
 #1 INSTAGRAM: {json.dumps(best_insta, ensure_ascii=False)}
@@ -627,12 +643,12 @@ def update_google_sheet(
             rows.append([idx + 1, "No qualifying video found", "", "", "", ""])
 
     rows.append([])
-    rows.append(["Insta", f"Rule: {insta_pass}", "Account", "Likes", "Plays / Comments", "Link"])
+    rows.append(["Insta", f"Rule: {insta_pass}", "Account", "Plays", "Likes / Comments", "Link"])
     for idx in range(3):
         if idx < len(insta_reels):
             r = insta_reels[idx]
-            pc = f"{r['plays']:,} plays / {r['comments']} cmts"
-            rows.append([idx + 1, r["caption"], f"@{r['owner']}", r["likes"], pc, r["url"]])
+            lc = f"{r['likes']:,} likes / {r['comments']} cmts"
+            rows.append([idx + 1, r["caption"], f"@{r['owner']}", r["plays"], lc, r["url"]])
         else:
             rows.append([idx + 1, "No qualifying reel found", "", "", "", ""])
 
@@ -666,7 +682,7 @@ def prepend_scripts_to_google_doc(creds, generated: dict[str, Any]) -> None:
 
     block = (
         f"==================================================\n"
-        f"DATE: {today_header} (@dr.dhairyam Style)\n"
+        f"DATE: {today_header}\n"
         f"==================================================\n\n"
         f"1. INSTAGRAM REEL SCRIPT (Single Topic | {len(s_insta)} chars)\n"
         f"{s_insta}\n\n"
@@ -680,7 +696,7 @@ def prepend_scripts_to_google_doc(creds, generated: dict[str, Any]) -> None:
         documentId=GOOGLE_DOC_ID,
         body={"requests": [{"insertText": {"location": {"index": 1}, "text": block}}]},
     ).execute()
-    print("[DOC] Prepended 3 @dr.dhairyam Tenglish scripts to Tech Gemini Doc.")
+    print("[DOC] Prepended 3 Dhairyam Tech scripts to Tech Gemini Doc.")
 
 
 # =============================================================================
@@ -704,7 +720,7 @@ def send_daily_email(generated: dict[str, Any]) -> None:
       <p>
         <strong>Google Sheet (All 3 Tables &amp; Links):</strong>
         <a href="{SHEET_URL}">Open Gemini Tech Sheet</a><br/>
-        <strong>Google Doc (3 @dr.dhairyam Scripts + Sources):</strong>
+        <strong>Google Doc (3 Dhairyam Tech Scripts + Sources):</strong>
         <a href="{DOC_URL}">Open Tech Gemini Doc</a>
       </p>
     </div>
