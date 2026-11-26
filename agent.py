@@ -1,19 +1,40 @@
 #!/usr/bin/env python3
 """
-Daily Viral Tech, AI, Geopolitics & Educational Outlier Agent (10:00 AM IST)
-- YouTube Outlier + Cross-Upload Validation:
-    * Small channel (<100K subs) with >100K views in 12-24h (Tech, AI, Global Viral, India Geopolitics)
-    * >=10 comments in last 3 hours IGNORING creator's own comments
-    * Cross-check if another creator uploaded the same topic with >=10K views (Long) or >=50K views (Short)
-- Instagram (6-8h US & India):
-    * Last 6-8 hours, >=30K plays, >=48 likes, >=10 comments
-    * Tech, AI, Geopolitics, and India/US viral news (prioritizing talking-head & faceless-voice creators)
-    * Any follower count (discovered via hashtags + starter handles)
-- Major Tech & Breakthrough News (Past 3 Days / 72h, Any Website with High Reaction):
-    * Hacker News top-reacted stories + Google News + Major Tech Blogs
-- Updates Google Sheet ("Gemini Tech" -> Creatives tab) with 3 links per table
-- Prepends 3 single-topic Dhairyam Tech (D.tech) Tenglish scripts (~1,500 chars + Source URL) to Google Doc
-- Sends short 3-point summary + Sheet/Doc links to Gmail
+Dhairyam Daily Viral Agent (v2) — runs once a day on GitHub Actions (~10 AM IST).
+
+Gives you 3 scripts a day: 1 Instagram, 1 YouTube (long video), 1 major tech news.
+It follows the same method you use by hand:
+
+INSTAGRAM (your manual method, automated)
+  1. Find reels posted in the last 24 h with 100K+ likes, OR "fast" reels
+     (lots of likes per hour since posting).
+  2. Keep only reels that are educational AND fit the niche (tech, AI, science facts,
+     defence, geopolitics, India stories). Gemini checks this.
+  3. Note the like count, WAIT (default 75 min), check again.
+  4. Keep reels that gained 5,000+ likes in that gap. The fastest grower wins.
+
+YOUTUBE (long videos, small channels only)
+  - Search windows 12 h -> 24 h -> 48 h (stops at the first window that finds one).
+  - Long videos only (4 min+), channel must be SMALL (<= 300K subs by default) and
+    the video must be an OUTLIER (views >= subscribers), 100K+ views, and 3+ comments
+    from viewers in the last 3 h. Big channels / news networks (CNN, BBC, NDTV...) are
+    never picked, even as a fallback.
+  - Views are checked twice (before and after the wait) so you also see the speed.
+
+MAJOR TECH NEWS
+  - Windows 12 h -> 24 h -> 48 h. A story is "booming" when 3+ different outlets
+    cover it (plus Hacker News reaction). The most-covered story wins.
+
+SCRIPTS
+  - The original video is used for the TOPIC only. Gemini researches the topic on
+    Google Search, adds new facts and an India angle, and writes a fresh Tenglish
+    script. It never says "according to CNN / this channel" and never copies lines.
+
+OUTPUT
+  - Google Doc: 3 scripts on top (with reference links for checking).
+  - Google Sheet: "Creatives" tab = today's picks + all the numbers;
+    "History" tab = every day's picks appended, so you can re-check the AI.
+  - Gmail summary.
 """
 
 import json
@@ -33,7 +54,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 # =============================================================================
-# CONFIGURATION (Pre-filled with your Sheet & Doc IDs; secrets come from Env)
+# SECRETS (GitHub Actions secrets)
 # =============================================================================
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
@@ -41,718 +62,760 @@ APIFY_API_TOKEN = os.environ["APIFY_API_TOKEN"]
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 GMAIL_ADDRESS = os.environ["GMAIL_ADDRESS"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
-RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", GMAIL_ADDRESS)
+RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL") or GMAIL_ADDRESS
 
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1GEwWnaDXbYmGelRp8X4Q-XsLo6uT6WQyc-_DOnC__Iw")
-GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "Creatives")
-GOOGLE_DOC_ID = os.getenv("GOOGLE_DOC_ID", "1siaaj87QPg1_M_h8F3tftZYDFthMvtCJjQiQwDhUgPs")
-
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID") or "1GEwWnaDXbYmGelRp8X4Q-XsLo6uT6WQyc-_DOnC__Iw"
+GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB") or "Creatives"
+GOOGLE_HISTORY_TAB = os.getenv("GOOGLE_HISTORY_TAB") or "History"
+GOOGLE_DOC_ID = os.getenv("GOOGLE_DOC_ID") or "1siaaj87QPg1_M_h8F3tftZYDFthMvtCJjQiQwDhUgPs"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/edit"
 DOC_URL = f"https://docs.google.com/document/d/{GOOGLE_DOC_ID}/edit"
+
+
+# =============================================================================
+# RULES (change any of these as GitHub "Variables" without touching code)
+# =============================================================================
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name) or default)
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name) or default)
+    except ValueError:
+        return default
+
+
+WAIT_MINUTES = env_int("WAIT_MINUTES", 75)            # gap between 1st and 2nd check
+
+IG_MIN_LIKES = env_int("IG_MIN_LIKES", 100_000)        # viral in 24 h
+IG_FAST_LIKES_PER_HOUR = env_int("IG_FAST_LIKES_PER_HOUR", 4_000)  # or "fast likes"
+IG_MIN_GAIN = env_int("IG_MIN_GAIN", 5_000)            # likes gained during the wait
+IG_RESULTS_PER_HASHTAG = env_int("IG_RESULTS_PER_HASHTAG", 20)
+IG_RESULTS_PER_HANDLE = env_int("IG_RESULTS_PER_HANDLE", 3)
+IG_MAX_TRACKED = env_int("IG_MAX_TRACKED", 12)         # reels re-checked after the wait
+
+YT_MIN_VIEWS = env_int("YT_MIN_VIEWS", 100_000)
+YT_MAX_SUBS = env_int("YT_MAX_SUBS", 300_000)          # "small channel"
+YT_MIN_OUTLIER = env_float("YT_MIN_OUTLIER", 1.0)      # views / subscribers
+YT_MIN_RECENT_COMMENTS = env_int("YT_MIN_RECENT_COMMENTS", 3)  # viewer comments in last 3 h
+YT_MIN_DURATION_SEC = env_int("YT_MIN_DURATION_SEC", 240)      # long video = 4 min+
+
+NEWS_MIN_SOURCES = env_int("NEWS_MIN_SOURCES", 3)
+WINDOWS_HOURS = [12, 24, 48]
 
 IST = timezone(timedelta(hours=5, minutes=30))
 NOW_UTC = datetime.now(timezone.utc)
 NOW_IST = NOW_UTC.astimezone(IST)
 
-# Major Tech, AI & Breakthrough News RSS (Past 3 Days / 72h)
-MAJOR_TECH_NEWS_FEEDS = [
-    ("Google News Tech", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en"),
-    ("Google News India Tech", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-IN&gl=IN&ceid=IN:en"),
-    ("Google News AI & Science", "https://news.google.com/rss/search?q=AI+breakthrough+OR+Tesla+FSD+OR+Nvidia+OR+OpenAI+OR+Anthropic&hl=en-US&gl=US&ceid=US:en"),
+# What fits the pages (learned from @dr.dhairyam's top reels: phone/tech facts,
+# defence & geopolitics, India real-hero stories, Telugu audience).
+NICHE = """
+Dhairyam pages (Telugu audience, India first):
+- Tech & AI: new AI tools/models, big tech company moves, gadgets, how-tech-works facts
+  (e.g. "how your phone knows you touched it"), cybersecurity, space & science breakthroughs.
+- Defence & geopolitics: Indian armed forces, weapons tech, India vs world, US/China/Russia moves
+  that affect India, global events that change everyday life (flights grounded, sanctions, wars).
+- Educational facts & India real-hero stories (a doctor, police officer or common person doing
+  something big), money/economy facts that matter to Indians.
+NOT a fit: memes, dance, comedy skits, celebrity gossip, movie promotions, product ads,
+religious/political party content, pure entertainment, sports highlights.
+"""
+
+# Big media / news networks: never treated as a "small channel" outlier.
+BIG_MEDIA_BLOCKLIST = re.compile(
+    r"\b(cnn|bbc|fox|nbc|abc news|cbs|msnbc|reuters|bloomberg|cnbc|al jazeera|sky news|"
+    r"wion|ndtv|india today|aaj tak|times of india|republic|zee|abp|tv9|ntv|sakshi|etv|"
+    r"news18|hindustan times|the hindu|firstpost|dw news|france 24|wsj|wall street journal|"
+    r"new york times|washington post|guardian|vice|insider|the verge|wired|cnet|mkbhd|"
+    r"linus tech tips|unbox therapy|mrwhosetheboss)\b",
+    re.I,
+)
+
+YT_BASE_QUERIES = [
+    "AI news", "new AI tool", "tech news today", "how it works technology",
+    "India defence technology", "geopolitics India", "science breakthrough", "tech explained",
+]
+
+INSTA_HASHTAGS = [
+    "technews", "ainews", "techfacts", "sciencefacts",
+    "geopolitics", "indiandefence", "telugunews", "didyouknow",
+]
+INSTA_STARTER_HANDLES = [
+    "varunmayya", "thinkschool", "abhiandniyu", "techburner", "trakintech",
+    "beebomco", "ai.for.everyone", "johnnyharris", "vaibhavsisinty", "ishansharma7390",
+]
+
+NEWS_FEEDS = [
+    ("Google News Tech (US)", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en"),
+    ("Google News Tech (IN)", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-IN&gl=IN&ceid=IN:en"),
+    ("Google News Science", "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en"),
     ("TechCrunch", "https://techcrunch.com/feed/"),
     ("The Verge", "https://www.theverge.com/rss/index.xml"),
+    ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
     ("Wired", "https://www.wired.com/feed/rss"),
     ("MIT Tech Review", "https://www.technologyreview.com/feed/"),
-    ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
 ]
+NEWS_SEARCH_TERMS = ["AI", "OpenAI OR Google OR Nvidia OR Apple OR Microsoft", "India technology", "cyber attack OR data breach"]
 
-# Instagram Hashtags (discovers ANY creator from 1 follower to millions) + Starter Handles
-INSTA_HASHTAGS = ["ainews", "technews", "geopolitics", "didyouknow", "sciencefacts"]
-INSTA_STARTER_HANDLES = [
-    "techburner",
-    "trakintech",
-    "beebomco",
-    "varunmayya",
-    "thinkschool",
-    "abhiandniyu",
-    "mkbhd",
-    "johnnyharris",
-    "ai.for.everyone",
-    "ndtv",
-]
 
+def log(msg: str) -> None:
+    print(f"[{datetime.now(IST).strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+# =============================================================================
+# GEMINI (auto-picks a model that exists today, so a renamed model never breaks the run)
+# =============================================================================
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-GEMINI_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview",
-    "gemini-4-hydrogen",
-]
+
+
+def discover_gemini_models() -> list[str]:
+    preferred = [m.strip() for m in (os.getenv("GEMINI_MODELS") or "").split(",") if m.strip()]
+    found: list[str] = []
+    try:
+        for m in gemini_client.models.list():
+            name = (m.name or "").replace("models/", "")
+            actions = getattr(m, "supported_actions", None) or []
+            if actions and "generateContent" not in actions:
+                continue
+            low = name.lower()
+            if any(bad in low for bad in ("image", "tts", "live", "embed", "audio", "vision", "robotics", "nano")):
+                continue
+            if "gemini" in low and ("flash" in low or "pro" in low):
+                found.append(name)
+    except Exception as exc:
+        log(f"[GEMINI WARN] could not list models: {exc}")
+
+    def rank(n: str) -> tuple:
+        nums = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)", n)[:1]] or [0.0]
+        return (nums[0], "flash" in n and "lite" not in n, "preview" not in n and "exp" not in n)
+
+    found.sort(key=rank, reverse=True)
+    fallback = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-pro"]
+    models = list(dict.fromkeys(preferred + found[:6] + fallback))
+    log(f"[GEMINI] model order: {models}")
+    return models
+
+
+GEMINI_MODELS = discover_gemini_models()
+
+
+def call_gemini(prompt: str, want_json: bool = True, search: bool = False) -> Any:
+    """Call Gemini with model fallback. search=True lets Gemini use Google Search (research)."""
+    last_err: Exception | None = None
+    for model_name in GEMINI_MODELS:
+        for attempt in range(2):
+            try:
+                config: dict[str, Any] = {}
+                if search:
+                    config["tools"] = [{"google_search": {}}]
+                elif want_json:
+                    config["response_mime_type"] = "application/json"
+                resp = gemini_client.models.generate_content(model=model_name, contents=prompt, config=config)
+                text = (resp.text or "").strip()
+                if not want_json:
+                    return text
+                text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.M).strip()
+                return json.loads(text)
+            except Exception as exc:
+                last_err = exc
+                log(f"[GEMINI WARN] {model_name} try {attempt + 1}: {str(exc)[:160]}")
+                time.sleep(4)
+    raise RuntimeError(f"All Gemini models failed: {last_err}")
+
+
+def niche_filter(items: list[dict[str, Any]], text_key: str, kind: str) -> dict[str, dict[str, Any]]:
+    """Ask Gemini which items fit the niche AND are educational. Returns {id: {fit, reason}}."""
+    if not items:
+        return {}
+    payload = [{"id": it["id"], "text": str(it.get(text_key, ""))[:300]} for it in items]
+    prompt = f"""You screen {kind} for these pages:
+{NICHE}
+For EACH item decide: is it in the niche AND educational/informative (teaches, explains or reports
+something real), not entertainment? Be strict.
+Return JSON: {{"results": [{{"id": "...", "fit": true/false, "topic": "3-6 word topic", "reason": "max 12 words"}}]}}
+ITEMS: {json.dumps(payload, ensure_ascii=False)}"""
+    try:
+        data = call_gemini(prompt)
+        return {str(r.get("id")): r for r in data.get("results", [])}
+    except Exception as exc:
+        log(f"[NICHE WARN] Gemini screening failed ({exc}); keeping all {kind}.")
+        return {it["id"]: {"fit": True, "topic": "", "reason": "not screened (Gemini down)"} for it in items}
 
 
 # =============================================================================
 # HELPERS
 # =============================================================================
 def parse_iso8601_duration(duration_str: str) -> int:
-    """Convert YouTube ISO-8601 duration (e.g. PT1M30S) to total seconds."""
-    match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str or "")
-    if not match:
+    m = re.match(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str or "")
+    if not m:
         return 0
-    hours = int(match.group(1) or 0)
-    minutes = int(match.group(2) or 0)
-    seconds = int(match.group(3) or 0)
-    return hours * 3600 + minutes * 60 + seconds
+    d, h, mi, s = (int(x or 0) for x in m.groups())
+    return d * 86400 + h * 3600 + mi * 60 + s
 
 
-def parse_rss_window(feeds: list[tuple[str, str]], hours_back: int = 72, max_per_feed: int = 8) -> list[dict[str, str]]:
-    """Fetch RSS entries published within the last `hours_back` hours."""
-    cutoff = NOW_UTC - timedelta(hours=hours_back)
-    items: list[dict[str, str]] = []
-    for source_name, url in feeds:
+def hours_since(dt: datetime | None) -> float:
+    if not dt:
+        return 24.0
+    return max((NOW_UTC - dt).total_seconds() / 3600, 0.25)
+
+
+def parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def yt_get(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+    params = {**params, "key": YOUTUBE_API_KEY}
+    r = requests.get(f"https://www.googleapis.com/youtube/v3/{endpoint}", params=params, timeout=20)
+    data = r.json()
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message", "YouTube API error"))
+    return data
+
+
+# =============================================================================
+# 1. MAJOR TECH NEWS (12 h -> 24 h -> 48 h, booming = covered by many outlets)
+# =============================================================================
+def collect_news(hours: int) -> list[dict[str, Any]]:
+    cutoff = NOW_UTC - timedelta(hours=hours)
+    feeds = list(NEWS_FEEDS)
+    for term in NEWS_SEARCH_TERMS:
+        q = requests.utils.quote(f"{term} when:{hours}h")
+        feeds.append((f"Google News search: {term}", f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"))
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for feed_name, url in feeds:
         try:
             parsed = feedparser.parse(url)
-            count = 0
-            for entry in parsed.entries:
-                published_parsed = entry.get("published_parsed") or entry.get("updated_parsed")
-                if published_parsed:
-                    pub_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
-                    if pub_dt < cutoff:
-                        continue
+            for entry in parsed.entries[:25]:
+                pp = entry.get("published_parsed") or entry.get("updated_parsed")
+                if not pp:
+                    continue
+                pub = datetime(*pp[:6], tzinfo=timezone.utc)
+                if pub < cutoff:
+                    continue
                 title = (entry.get("title") or "").strip()
                 link = (entry.get("link") or "").strip()
-                if title and link:
-                    items.append({"source": source_name, "title": title, "url": link})
-                    count += 1
-                    if count >= max_per_feed:
-                        break
+                outlet = (entry.get("source") or {}).get("title") or feed_name
+                if title and link and title not in seen:
+                    seen.add(title)
+                    items.append({"id": f"n{len(items)}", "outlet": outlet, "title": title, "url": link,
+                                  "hours_ago": round(hours_since(pub), 1)})
         except Exception as exc:
-            print(f"[RSS WARN] Failed to parse {source_name}: {exc}")
+            log(f"[RSS WARN] {feed_name}: {exc}")
+
+    try:
+        cutoff_ts = int(cutoff.timestamp())
+        r = requests.get("https://hn.algolia.com/api/v1/search", timeout=15, params={
+            "tags": "story", "numericFilters": f"created_at_i>{cutoff_ts},points>100", "hitsPerPage": 25})
+        for hit in r.json().get("hits", []):
+            if hit.get("url") and hit.get("title"):
+                items.append({"id": f"n{len(items)}", "outlet": "Hacker News",
+                              "title": hit["title"], "url": hit["url"],
+                              "hn_points": hit.get("points", 0), "hn_comments": hit.get("num_comments", 0)})
+    except Exception as exc:
+        log(f"[HN WARN] {exc}")
     return items
 
 
-def fetch_hacker_news_viral_72h() -> list[dict[str, Any]]:
-    """Fetch high-reaction stories from any website over the past 3 days via Hacker News Algolia API."""
-    cutoff_ts = int((NOW_UTC - timedelta(hours=72)).timestamp())
-    url = "https://hn.algolia.com/api/v1/search"
-    params = {
-        "tags": "story",
-        "numericFilters": f"created_at_i>{cutoff_ts},points>150",
-        "hitsPerPage": 20,
-    }
-    results: list[dict[str, Any]] = []
-    try:
-        resp = requests.get(url, params=params, timeout=15)
-        for hit in resp.json().get("hits", []):
-            story_url = hit.get("url")
-            title = hit.get("title")
-            if story_url and title:
-                results.append(
-                    {
-                        "source": f"HN ({hit.get('points', 0)} pts, {hit.get('num_comments', 0)} comments)",
-                        "title": title,
-                        "url": story_url,
-                        "points": int(hit.get("points", 0)),
-                    }
-                )
-    except Exception as exc:
-        print(f"[HN WARN] {exc}")
-    return results
-
-
-def call_gemini_json(prompt: str) -> Any:
-    """Ask Gemini for strict JSON with automatic retry & active model fallback."""
-    last_err: Exception | None = None
-    for model_name in GEMINI_MODELS:
-        for attempt in range(2):
-            try:
-                response = gemini_client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config={"response_mime_type": "application/json"},
-                )
-                return json.loads(response.text)
-            except Exception as exc:
-                last_err = exc
-                print(f"[GEMINI WARN] {model_name} attempt {attempt + 1} failed: {exc}")
-                time.sleep(3)
-    raise last_err
-
-
-# =============================================================================
-# 1. MAJOR TECH & BREAKTHROUGH NEWS (PAST 3 DAYS, HIGH REACTION, ANY WEBSITE)
-# =============================================================================
-def fetch_major_news_and_queries() -> tuple[list[dict[str, str]], list[str]]:
-    """Pull past 72h high-reaction tech/AI/breakthrough news from any website + YT queries."""
-    hn_items = fetch_hacker_news_viral_72h()
-    rss_items = parse_rss_window(MAJOR_TECH_NEWS_FEEDS, hours_back=72, max_per_feed=7)
-    combined = hn_items + rss_items
-
-    prompt = f"""
-You are a senior tech & AI editor for Dhairyam Tech (D.tech).
-From the past 3 days (72h) of stories below, pick ONLY the TOP 3 MAJOR tech, AI, science, or breakthrough stories that people are heavily reacting to (think: CEO changes at Nvidia/OpenAI, Tesla FSD V15, major math/AI breakthroughs like WSJ/Anthropic, etc. — skip minor gadget deals or routine listicles).
-
-Return JSON with two keys:
-1. "major_news": array of the top 3 major stories. Each object must have:
-   - "title": clean headline
-   - "source": publication/source
-   - "url": exact URL copied verbatim from the input list
-   - "why_viral": 1 short sentence explaining why people are reacting
-2. "tech_queries": array of 6 short YouTube search queries (3-5 words each) covering Tech, AI, Global Viral News, and India Geopolitics right now.
-
-CANDIDATE STORIES (PAST 72H):
-{json.dumps(combined[:55], ensure_ascii=False)}
-"""
-    try:
-        data = call_gemini_json(prompt)
-        major_news = data.get("major_news", [])[:3]
-        tech_queries = data.get("tech_queries", [])[:6]
-    except Exception as exc:
-        print(f"[FALLBACK] Gemini unavailable for news curation ({exc}); using top HN/RSS items.")
-        major_news = [
-            {
-                "title": item["title"],
-                "source": item["source"],
-                "url": item["url"],
-                "why_viral": "High reaction story from the past 72 hours.",
-            }
-            for item in combined[:3]
-        ]
-        tech_queries = [
-            "AI news today",
-            "India geopolitics news",
-            "global viral news today",
-            "tech breakthrough AI",
-            "OpenAI Nvidia Tesla",
-            "India tech news",
-        ]
-
-    if not tech_queries:
-        tech_queries = ["AI news today", "India geopolitics", "global viral news", "tech breakthrough"]
-    return major_news, tech_queries
-
-
-# =============================================================================
-# 2. YOUTUBE OUTLIER + CROSS-UPLOAD VALIDATION (IGNORING CREATOR COMMENTS)
-# =============================================================================
-def fetch_channel_subscribers(channel_ids: list[str]) -> dict[str, int]:
-    """Batch-fetch subscriber counts for channel IDs (1 unit per 50 channels)."""
-    subs_map: dict[str, int] = {}
-    unique_ids = list(dict.fromkeys([c for c in channel_ids if c]))
-    for i in range(0, len(unique_ids), 50):
-        batch = unique_ids[i : i + 50]
-        params = {"part": "statistics", "id": ",".join(batch), "key": YOUTUBE_API_KEY}
+def run_news_waterfall() -> tuple[dict[str, Any] | None, str]:
+    last_story: dict[str, Any] | None = None
+    for hours in WINDOWS_HOURS:
+        items = collect_news(hours)
+        log(f"[NEWS] {hours}h window: {len(items)} headlines")
+        if not items:
+            continue
+        prompt = f"""You are the news editor for Dhairyam Tech (Telugu, India-first audience).
+Below are tech/science headlines from the last {hours} hours from many outlets.
+1. Group headlines that are about the SAME story.
+2. A story is "booming" if many DIFFERENT outlets cover it (count distinct outlets) and/or it has big
+   Hacker News points. Skip deals, reviews, listicles, minor app updates and stock-price noise.
+3. Prefer stories an Indian viewer would care about. Pick the ONE biggest story.
+Return JSON: {{"title": "...", "summary": "2 sentences of what happened", "outlets": ["distinct outlet names"],
+"outlet_count": N, "urls": ["2-4 exact URLs from the list"], "why_booming": "1 sentence"}}
+HEADLINES: {json.dumps(items[:150], ensure_ascii=False)}"""
         try:
-            r = requests.get("https://www.googleapis.com/youtube/v3/channels", params=params, timeout=15)
-            for item in r.json().get("items", []):
-                stats = item.get("statistics", {})
-                subs_map[item["id"]] = -1 if stats.get("hiddenSubscriberCount") else int(stats.get("subscriberCount", 0))
+            story = call_gemini(prompt)
         except Exception as exc:
-            print(f"[YT CHANNEL WARN] {exc}")
-    return subs_map
+            log(f"[NEWS WARN] {exc}")
+            continue
+        count = int(story.get("outlet_count") or len(story.get("outlets", [])))
+        valid_urls = {it["url"] for it in items}
+        story["urls"] = [u for u in story.get("urls", []) if u in valid_urls] or [items[0]["url"]]
+        story["outlet_count"] = count
+        if count >= NEWS_MIN_SOURCES:
+            return story, f"{hours}h window, covered by {count} outlets"
+        log(f"[NEWS] best story in {hours}h only has {count} outlets; widening window.")
+        last_story = story
+    if last_story:
+        return last_story, f"48h best available ({last_story.get('outlet_count')} outlets, below {NEWS_MIN_SOURCES})"
+    return None, "No news found"
 
 
-def count_non_creator_comments(video_id: str, creator_channel_id: str, hours: int = 3) -> int:
-    """Count top-level comments in the last `hours` hours, IGNORING the creator's own comments."""
-    url = "https://www.googleapis.com/youtube/v3/commentThreads"
-    params = {
-        "part": "snippet",
-        "videoId": video_id,
-        "order": "time",
-        "maxResults": 40,
-        "key": YOUTUBE_API_KEY,
-    }
+# =============================================================================
+# 2. YOUTUBE: SMALL-CHANNEL LONG-VIDEO OUTLIERS (12 h -> 24 h -> 48 h)
+# =============================================================================
+def trending_queries() -> list[str]:
+    prompt = f"""Give 6 short YouTube search queries (2-5 words) for what is trending RIGHT NOW
+({NOW_IST.strftime('%d %b %Y')}) in this niche: {NICHE}
+Return JSON: {{"queries": ["..."]}}"""
     try:
-        resp = requests.get(url, params=params, timeout=15)
-        if resp.status_code != 200:
-            return 0
-        cutoff = NOW_UTC - timedelta(hours=hours)
-        recent_non_creator = 0
-        for item in resp.json().get("items", []):
-            top = item["snippet"]["topLevelComment"]["snippet"]
-            author_id = (top.get("authorChannelId") or {}).get("value", "")
-            if creator_channel_id and author_id == creator_channel_id:
-                continue
-            pub_dt = datetime.fromisoformat(top["publishedAt"].replace("Z", "+00:00"))
-            if pub_dt >= cutoff:
-                recent_non_creator += 1
-        return recent_non_creator
+        return [q for q in call_gemini(prompt).get("queries", []) if isinstance(q, str)][:6]
     except Exception:
-        return 0
-
-
-def search_youtube_candidates(queries: list[str], hours_back: int) -> list[dict[str, Any]]:
-    """Search YouTube for candidate videos published within `hours_back` hours."""
-    published_after = (NOW_UTC - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    video_ids: list[str] = []
-    seen: set[str] = set()
-
-    all_queries = list(dict.fromkeys(queries + ["AI tech breakthrough", "India geopolitics global news"]))[:6]
-    for q in all_queries:
-        params = {
-            "part": "snippet",
-            "type": "video",
-            "order": "viewCount",
-            "maxResults": 10,
-            "publishedAfter": published_after,
-            "q": q,
-            "key": YOUTUBE_API_KEY,
-        }
-        try:
-            r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=15)
-            for item in r.json().get("items", []):
-                vid = item["id"].get("videoId")
-                if vid and vid not in seen:
-                    seen.add(vid)
-                    video_ids.append(vid)
-        except Exception as exc:
-            print(f"[YT SEARCH WARN] {q}: {exc}")
-
-    if not video_ids:
         return []
 
-    raw_videos: list[dict[str, Any]] = []
-    channel_ids: list[str] = []
+
+def fetch_videos(video_ids: list[str]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
     for i in range(0, len(video_ids), 50):
-        batch = video_ids[i : i + 50]
-        params = {"part": "snippet,statistics,contentDetails", "id": ",".join(batch), "key": YOUTUBE_API_KEY}
-        r = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=15)
-        for item in r.json().get("items", []):
-            stats = item.get("statistics", {})
-            snippet = item.get("snippet", {})
-            ch_id = snippet.get("channelId", "")
-            channel_ids.append(ch_id)
-            dur_sec = parse_iso8601_duration(item.get("contentDetails", {}).get("duration", ""))
-            title = snippet.get("title", "")
-            is_short = dur_sec <= 60 or "#shorts" in title.lower()
-            raw_videos.append(
-                {
-                    "id": item["id"],
-                    "title": title,
-                    "channel": snippet.get("channelTitle", ""),
-                    "channel_id": ch_id,
-                    "views": int(stats.get("viewCount", 0)),
-                    "total_comments": int(stats.get("commentCount", 0)),
-                    "duration_sec": dur_sec,
-                    "is_short": is_short,
-                    "url": f"https://www.youtube.com/shorts/{item['id']}" if is_short else f"https://www.youtube.com/watch?v={item['id']}",
-                }
-            )
-
-    subs_map = fetch_channel_subscribers(channel_ids)
-    for v in raw_videos:
-        v["subscribers"] = subs_map.get(v["channel_id"], 0)
-    raw_videos.sort(key=lambda x: x["views"], reverse=True)
-    return raw_videos
-
-
-def check_cross_upload_traction(topic_title: str, exclude_video_id: str) -> dict[str, Any] | None:
-    """
-    Check if another creator uploaded the same topic in the last 24h and is getting
-    fast engagement: >=10K views (Long) or >=50K views (Short).
-    """
-    published_after = (NOW_UTC - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    short_query = " ".join(re.findall(r"[A-Za-z0-9]+", topic_title)[:5])
-    if not short_query:
-        return None
-    try:
-        r = requests.get(
-            "https://www.googleapis.com/youtube/v3/search",
-            params={
-                "part": "snippet",
-                "type": "video",
-                "order": "viewCount",
-                "maxResults": 6,
-                "publishedAfter": published_after,
-                "q": short_query,
-                "key": YOUTUBE_API_KEY,
-            },
-            timeout=15,
-        )
-        ids = [
-            it["id"]["videoId"]
-            for it in r.json().get("items", [])
-            if it["id"].get("videoId") and it["id"]["videoId"] != exclude_video_id
-        ]
-        if not ids:
-            return None
-        vr = requests.get(
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={"part": "snippet,statistics,contentDetails", "id": ",".join(ids), "key": YOUTUBE_API_KEY},
-            timeout=15,
-        )
-        for item in vr.json().get("items", []):
-            views = int(item.get("statistics", {}).get("viewCount", 0))
-            dur = parse_iso8601_duration(item.get("contentDetails", {}).get("duration", ""))
-            title = item.get("snippet", {}).get("title", "")
-            is_short = dur <= 60 or "#shorts" in title.lower()
-            if (is_short and views >= 50_000) or (not is_short and views >= 10_000):
-                return {
-                    "id": item["id"],
-                    "title": title,
-                    "channel": item.get("snippet", {}).get("channelTitle", ""),
-                    "views": views,
-                    "format": "Short (50K+)" if is_short else "Long (10K+)",
-                    "url": f"https://www.youtube.com/shorts/{item['id']}" if is_short else f"https://www.youtube.com/watch?v={item['id']}",
-                }
-    except Exception:
-        pass
-    return None
-
-
-def run_youtube_waterfall(queries: list[str]) -> tuple[list[dict[str, Any]], str]:
-    """
-    Outlier rule:
-      - Channel <100K subs getting >100K views in 12-24h window (48h fallback)
-      - >=10 non-creator comments in last 3 hours
-      - Cross-upload check: another creator on same topic getting >=10K (Long) or >=50K (Short)
-    """
-    candidates_24h = search_youtube_candidates(queries, hours_back=24)
-    outliers: list[dict[str, Any]] = []
-
-    for v in candidates_24h:
-        if 0 <= v["subscribers"] < 100_000 and v["views"] > 100_000 and v["total_comments"] >= 10:
-            non_creator_3h = count_non_creator_comments(v["id"], v["channel_id"], hours=3)
-            if non_creator_3h >= 10:
-                v["recent_comments"] = f"{non_creator_3h} non-creator in 3h"
-                v["format"] = "Short" if v["is_short"] else "Long Video"
-                cross = check_cross_upload_traction(v["title"], v["id"])
-                v["cross_match"] = f"Yes: {cross['format']}" if cross else "Primary Outlier"
-                outliers.append(v)
-                if cross and len(outliers) < 3:
-                    cross["subscribers"] = 0
-                    cross["recent_comments"] = "Cross-upload match"
-                    cross["cross_match"] = f"Matches #{len(outliers)}"
-                    outliers.append(cross)
-                if len(outliers) >= 3:
-                    break
-
-    if outliers:
-        return outliers[:3], "24h Outlier (<100K subs, >100K views, 10+ non-creator comments/3h)"
-
-    candidates_48h = search_youtube_candidates(queries, hours_back=48)
-    small_48h = [v for v in candidates_48h if 0 <= v["subscribers"] < 100_000][:3]
-    chosen = small_48h if small_48h else candidates_48h[:3]
-    for v in chosen:
-        v["recent_comments"] = f"{v['total_comments']} total"
-        v["format"] = "Short" if v["is_short"] else "Long Video"
-        v["cross_match"] = "48h Fallback"
-    return chosen, "48h Small-Channel Fallback"
-
-
-# =============================================================================
-# 3. INSTAGRAM (6-8H US & INDIA: >=30K PLAYS, >=48 LIKES, >=10 COMMENTS)
-# =============================================================================
-def run_instagram_pipeline() -> tuple[list[dict[str, Any]], str]:
-    """
-    Exact Instagram rule:
-      - Last 6-8 hours (8h cutoff; 24h fallback if <3 matches)
-      - >= 30,000 plays AND >= 48 likes AND >= 10 comments
-      - Tech, AI, Geopolitics, and India/US viral news
-      - Prioritizes talking-head & faceless-voice creators (any follower count)
-    """
-    items: list[dict[str, Any]] = []
-
-    # 1. Hashtag discovery (finds ANY creator regardless of follower count)
-    try:
-        r1 = requests.post(
-            f"https://api.apify.com/v2/acts/apify~instagram-hashtag-scraper/run-sync-get-dataset-items?token={APIFY_API_TOKEN}",
-            json={"hashtags": INSTA_HASHTAGS, "resultsType": "reels", "resultsLimit": 8},
-            timeout=180,
-        )
-        if r1.status_code in (200, 201) and isinstance(r1.json(), list):
-            items.extend(r1.json())
-    except Exception as exc:
-        print(f"[APIFY HASHTAG WARN] {exc}")
-
-    # 2. Starter handles
-    try:
-        r2 = requests.post(
-            f"https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items?token={APIFY_API_TOKEN}",
-            json={"username": INSTA_STARTER_HANDLES, "resultsLimit": 2},
-            timeout=180,
-        )
-        if r2.status_code in (200, 201) and isinstance(r2.json(), list):
-            items.extend(r2.json())
-    except Exception as exc:
-        print(f"[APIFY REEL WARN] {exc}")
-
-    cutoff_8h = NOW_UTC - timedelta(hours=8)
-    cutoff_24h = NOW_UTC - timedelta(hours=24)
-    strict_8h: list[dict[str, Any]] = []
-    fallback_24h: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
-
-    for item in items:
-        reel_url = item.get("url") or f"https://www.instagram.com/reel/{item.get('shortCode', '')}/"
-        if not reel_url or reel_url in seen_urls:
-            continue
-        seen_urls.add(reel_url)
-
-        ts = item.get("timestamp")
-        pub_dt = None
-        if ts:
-            try:
-                pub_dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-            except ValueError:
-                pass
-
-        likes = int(item.get("likesCount") or 0)
-        plays = int(item.get("videoPlayCount") or item.get("videoViewCount") or 0)
-        comments = int(item.get("commentsCount") or 0)
-
-        if plays >= 30_000 and likes >= 48 and comments >= 10:
-            rec = {
-                "owner": item.get("ownerUsername", ""),
-                "caption": (item.get("caption") or "").replace("\n", " ")[:220],
-                "likes": likes,
-                "plays": plays,
-                "comments": comments,
-                "url": reel_url,
+        data = yt_get("videos", {"part": "snippet,statistics,contentDetails,liveStreamingDetails",
+                                 "id": ",".join(video_ids[i:i + 50])})
+        for item in data.get("items", []):
+            sn, st = item.get("snippet", {}), item.get("statistics", {})
+            out[item["id"]] = {
+                "id": item["id"],
+                "title": sn.get("title", ""),
+                "description": (sn.get("description") or "")[:400],
+                "channel": sn.get("channelTitle", ""),
+                "channel_id": sn.get("channelId", ""),
+                "published": parse_dt(sn.get("publishedAt")),
+                "views": int(st.get("viewCount", 0)),
+                "comments": int(st.get("commentCount", 0)),
+                "likes": int(st.get("likeCount", 0)),
+                "duration_sec": parse_iso8601_duration(item.get("contentDetails", {}).get("duration", "")),
+                "is_live": sn.get("liveBroadcastContent") != "none" or "liveStreamingDetails" in item,
+                "url": f"https://www.youtube.com/watch?v={item['id']}",
             }
-            if pub_dt is None or pub_dt >= cutoff_8h:
-                strict_8h.append(rec)
-            elif pub_dt >= cutoff_24h:
-                fallback_24h.append(rec)
+    return out
 
-    pool = strict_8h if len(strict_8h) >= 3 else (strict_8h + fallback_24h)
-    if not pool:
-        return [], "No Insta reel 30K+ plays, 48+ likes & 10+ comments found"
 
-    pool.sort(key=lambda x: (x["plays"], x["likes"]), reverse=True)
-    label = (
-        "6-8h US/India (30K+ plays, 48+ likes, 10+ cmts)"
-        if len(strict_8h) >= 3
-        else "24h Fallback (30K+ plays, 48+ likes, 10+ cmts)"
-    )
+def fetch_subscribers(channel_ids: list[str]) -> dict[str, int]:
+    subs: dict[str, int] = {}
+    ids = list(dict.fromkeys(c for c in channel_ids if c))
+    for i in range(0, len(ids), 50):
+        data = yt_get("channels", {"part": "statistics", "id": ",".join(ids[i:i + 50])})
+        for item in data.get("items", []):
+            st = item.get("statistics", {})
+            subs[item["id"]] = -1 if st.get("hiddenSubscriberCount") else int(st.get("subscriberCount", 0))
+    return subs
 
-    if len(pool) <= 3:
-        return pool, label
 
-    prompt = f"""
-Select the best 3 Instagram Reels from the candidates below:
-- Topics: Tech, AI, Geopolitics, or India/US viral news
-- Format priority: Talking-head and faceless-voice explainers/news (avoid pure memes or unrelated entertainment)
-Return JSON: {{"selected_urls": ["url1", "url2", "url3"]}}
-
-CANDIDATES:
-{json.dumps(pool[:15], ensure_ascii=False)}
-"""
+def recent_viewer_comments(video_id: str, creator_id: str, hours: int = 3) -> int:
     try:
-        chosen = call_gemini_json(prompt).get("selected_urls", [])
-        by_url = {p["url"]: p for p in pool}
-        ranked = [by_url[u] for u in chosen if u in by_url]
-        if ranked:
-            return ranked[:3], label
+        data = yt_get("commentThreads", {"part": "snippet", "videoId": video_id, "order": "time", "maxResults": 100})
     except Exception:
-        pass
-    return pool[:3], label
+        return 0
+    cutoff = NOW_UTC - timedelta(hours=hours)
+    n = 0
+    for item in data.get("items", []):
+        top = item["snippet"]["topLevelComment"]["snippet"]
+        if (top.get("authorChannelId") or {}).get("value") == creator_id:
+            continue
+        if (parse_dt(top.get("publishedAt")) or NOW_UTC) >= cutoff:
+            n += 1
+    return n
+
+
+def youtube_candidates(queries: list[str], hours: int) -> list[dict[str, Any]]:
+    after = (NOW_UTC - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ids: list[str] = []
+    for q in queries:
+        for extra in ({}, {"regionCode": "IN"}):
+            try:
+                data = yt_get("search", {"part": "id", "type": "video", "order": "viewCount", "maxResults": 50,
+                                         "publishedAfter": after, "q": q, **extra})
+                ids += [it["id"]["videoId"] for it in data.get("items", []) if it["id"].get("videoId")]
+            except Exception as exc:
+                log(f"[YT SEARCH WARN] {q}: {exc}")
+                if "quota" in str(exc).lower():
+                    return []
+    ids = list(dict.fromkeys(ids))
+    videos = fetch_videos(ids)
+    subs = fetch_subscribers([v["channel_id"] for v in videos.values()])
+
+    out = []
+    for v in videos.values():
+        v["subscribers"] = subs.get(v["channel_id"], -1)
+        v["hours_live"] = round(hours_since(v["published"]), 1)
+        v["outlier"] = round(v["views"] / v["subscribers"], 2) if v["subscribers"] > 0 else 0
+        v["views_per_hour"] = int(v["views"] / v["hours_live"])
+        if v["is_live"] or v["duration_sec"] < YT_MIN_DURATION_SEC:
+            continue                      # long videos only
+        if v["subscribers"] <= 0 or v["subscribers"] > YT_MAX_SUBS:
+            continue                      # small channels only (hidden subs skipped)
+        if BIG_MEDIA_BLOCKLIST.search(v["channel"]):
+            continue                      # never news networks / big media
+        out.append(v)
+    log(f"[YT] {hours}h: {len(ids)} found -> {len(out)} small-channel long videos")
+    return out
+
+
+def run_youtube_waterfall() -> tuple[list[dict[str, Any]], str]:
+    queries = list(dict.fromkeys(trending_queries() + YT_BASE_QUERIES))[:10]
+    log(f"[YT] queries: {queries}")
+    # One 48h search (saves API quota), then check 12h -> 24h -> 48h windows locally.
+    cands = youtube_candidates(queries, max(WINDOWS_HOURS))
+    screen = niche_filter(cands, "title", "YouTube videos")
+    all_fits = []
+    for v in cands:
+        s = screen.get(v["id"], {})
+        if s.get("fit"):
+            v["topic"], v["fit_reason"] = s.get("topic", ""), s.get("reason", "")
+            all_fits.append(v)
+    relaxed_pool: list[dict[str, Any]] = all_fits
+    checked: set[str] = set()
+    for hours in WINDOWS_HOURS:
+        fits = [v for v in all_fits if v["hours_live"] <= hours]
+        strict = [v for v in fits if v["views"] >= YT_MIN_VIEWS and v["outlier"] >= YT_MIN_OUTLIER
+                  and v["id"] not in checked]
+        strict.sort(key=lambda v: (v["outlier"], v["views_per_hour"]), reverse=True)
+        winners = []
+        for v in strict[:8]:
+            checked.add(v["id"])
+            v["recent_comments"] = recent_viewer_comments(v["id"], v["channel_id"])
+            if v["recent_comments"] >= YT_MIN_RECENT_COMMENTS:
+                winners.append(v)
+        if winners:
+            return winners[:3], (f"{hours}h: small channel (<= {YT_MAX_SUBS:,} subs), long video, "
+                                 f"{YT_MIN_VIEWS:,}+ views, views >= {YT_MIN_OUTLIER}x subs, "
+                                 f"{YT_MIN_RECENT_COMMENTS}+ viewer comments in 3h")
+
+    # Relaxed (still small channels + niche): best outlier ratio. Clearly labelled in the sheet.
+    seen, relaxed = set(), []
+    for v in sorted(relaxed_pool, key=lambda v: (v["outlier"], v["views"]), reverse=True):
+        if v["id"] not in seen:
+            seen.add(v["id"])
+            if "recent_comments" not in v:
+                v["recent_comments"] = recent_viewer_comments(v["id"], v["channel_id"])
+            relaxed.append(v)
+        if len(relaxed) >= 3:
+            break
+    return relaxed, "RELAXED 48h: no video passed all rules; best small-channel outliers shown"
+
+
+def recheck_youtube(videos: list[dict[str, Any]]) -> None:
+    if not videos:
+        return
+    fresh = fetch_videos([v["id"] for v in videos])
+    for v in videos:
+        f = fresh.get(v["id"])
+        if f:
+            v["view_gain"] = f["views"] - v["views"]
+            v["comment_gain"] = f["comments"] - v["comments"]
+            v["views_after"] = f["views"]
 
 
 # =============================================================================
-# 4. GENERATE 3 SINGLE-TOPIC DHAIRYAM TECH (1ST STYLE) SCRIPTS (~1,500 CHARS + SOURCE)
+# 3. INSTAGRAM: SNAPSHOT -> WAIT -> RE-CHECK (your manual method)
 # =============================================================================
-def generate_scripts_and_titles(
-    yt_videos: list[dict[str, Any]],
-    insta_reels: list[dict[str, Any]],
-    major_news: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """
-    Write 3 separate single-topic scripts (NO mixing) in yesterday's 1st Dhairyam Tech
-    (D.tech) style (~1,500 chars each) with Source URL at the bottom.
-    """
-    best_yt = yt_videos[0] if yt_videos else None
-    best_insta = insta_reels[0] if insta_reels else None
-    best_news = major_news[0] if major_news else None
-
-    prompt = f"""
-You are the scriptwriter for Dhairyam Tech (D.tech).
-CRITICAL RULE: DO NOT MIX MULTIPLE STORIES!
-- "script_insta" must be ONLY about the single #1 Instagram Reel below.
-- "script_yt" must be ONLY about the single #1 YouTube Video below.
-- "script_news" must be ONLY about the single #1 Major Tech News story below.
-
-Return JSON with these exact keys:
-- "yt_short_title": crisp YouTube-title-style headline (under 85 chars) for #1 YouTube story.
-- "insta_short_title": crisp YouTube-title-style headline (under 85 chars) for #1 Instagram story.
-- "news_short_title": crisp YouTube-title-style headline (under 85 chars) for #1 Major Tech News story.
-- "script_insta": Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
-- "script_yt": Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
-- "script_news": Tenglish script (1,450-1,550 chars including spaces) ending with "\nSource: <exact URL>"
-
-YESTERDAY'S 1ST STYLE (DHAIRYAM TECH / D.TECH):
-- Opening: Warm, energetic greeting ("Hello Dhairyam Tech family!" / "Namaskaram Dhairyam Tech (D.tech) viewers!" / "Namaste Dhairyam Tech (D.tech) audience!") followed immediately by a sharp hook.
-- Language: Natural conversational Telugu written strictly in English alphabet (Tenglish).
-- Body: Clear, keyword-rich explanation breaking down the exact verified facts and why it matters.
-- Closing: Engaging question to viewers + follow/subscribe CTA ("ventane follow avvandi / subscribe cheskondi, mee abhiprayam kinda comment cheyyandi!") + exact "Source: <URL>" at the bottom.
-
-#1 YOUTUBE: {json.dumps(best_yt, ensure_ascii=False)}
-#1 INSTAGRAM: {json.dumps(best_insta, ensure_ascii=False)}
-#1 MAJOR TECH NEWS: {json.dumps(best_news, ensure_ascii=False)}
-"""
+def apify_run(actor: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
     try:
-        return call_gemini_json(prompt)
+        r = requests.post(
+            f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items",
+            params={"token": APIFY_API_TOKEN}, json=payload, timeout=300)
+        if r.status_code in (200, 201) and isinstance(r.json(), list):
+            return r.json()
+        log(f"[APIFY WARN] {actor}: HTTP {r.status_code} {r.text[:200]}")
     except Exception as exc:
-        print(f"[FALLBACK] Gemini unavailable for scripts ({exc}).")
-        return {
-            "yt_short_title": best_yt["title"][:85] if best_yt else "No qualifying YouTube video",
-            "insta_short_title": best_insta["caption"][:85] if best_insta else "No qualifying Instagram Reel",
-            "news_short_title": best_news["title"][:85] if best_news else "Top Major Tech News",
-            "script_insta": f"[Gemini API busy (503).]\nSource: {best_insta['url'] if best_insta else 'N/A'}",
-            "script_yt": f"[Gemini API busy (503).]\nSource: {best_yt['url'] if best_yt else 'N/A'}",
-            "script_news": f"[Gemini API busy (503).]\nSource: {best_news['url'] if best_news else 'N/A'}",
-        }
+        log(f"[APIFY WARN] {actor}: {exc}")
+    return []
+
+
+def reel_record(item: dict[str, Any]) -> dict[str, Any] | None:
+    code = item.get("shortCode") or ""
+    url = item.get("url") or (f"https://www.instagram.com/reel/{code}/" if code else "")
+    if not url:
+        return None
+    if item.get("type") not in (None, "Video") and not item.get("videoUrl") and item.get("productType") != "clips":
+        return None
+    likes = int(item.get("likesCount") or 0)
+    return {
+        "id": code or url,
+        "url": url,
+        "owner": item.get("ownerUsername", ""),
+        "caption": (item.get("caption") or "").replace("\n", " ")[:300],
+        "likes": max(likes, 0),
+        "plays": int(item.get("videoPlayCount") or item.get("videoViewCount") or 0),
+        "comments": int(item.get("commentsCount") or 0),
+        "published": parse_dt(item.get("timestamp")),
+    }
+
+
+def instagram_discover() -> list[dict[str, Any]]:
+    raw = apify_run("apify~instagram-hashtag-scraper",
+                    {"hashtags": INSTA_HASHTAGS, "resultsType": "reels", "resultsLimit": IG_RESULTS_PER_HASHTAG})
+    raw += apify_run("apify~instagram-reel-scraper",
+                     {"username": INSTA_STARTER_HANDLES, "resultsLimit": IG_RESULTS_PER_HANDLE})
+    reels: dict[str, dict[str, Any]] = {}
+    for item in raw:
+        rec = reel_record(item)
+        if rec:
+            reels[rec["id"]] = rec
+    return list(reels.values())
+
+
+def run_instagram_snapshot() -> tuple[list[dict[str, Any]], str]:
+    reels = instagram_discover()
+    cutoff = NOW_UTC - timedelta(hours=24)
+    fresh = [r for r in reels if r["published"] and r["published"] >= cutoff]
+    for r in fresh:
+        r["hours_live"] = round(hours_since(r["published"]), 1)
+        r["likes_per_hour"] = int(r["likes"] / r["hours_live"])
+    viral = [r for r in fresh if r["likes"] >= IG_MIN_LIKES or r["likes_per_hour"] >= IG_FAST_LIKES_PER_HOUR]
+    log(f"[IG] {len(reels)} reels scraped, {len(fresh)} in last 24h, {len(viral)} viral/fast")
+
+    label = f"24h, {IG_MIN_LIKES:,}+ likes or {IG_FAST_LIKES_PER_HOUR:,}+ likes/hour"
+    if not viral:   # keep the fastest few so the second check still has something to watch
+        viral = sorted(fresh, key=lambda r: r["likes_per_hour"], reverse=True)[:IG_MAX_TRACKED]
+        label = "RELAXED: no reel hit the like rule; tracking fastest reels"
+
+    screen = niche_filter(viral, "caption", "Instagram reels")
+    tracked = []
+    for r in sorted(viral, key=lambda r: r["likes_per_hour"], reverse=True):
+        s = screen.get(r["id"], {})
+        if s.get("fit"):
+            r["topic"], r["fit_reason"] = s.get("topic", ""), s.get("reason", "")
+            tracked.append(r)
+    return tracked[:IG_MAX_TRACKED], label
+
+
+def run_instagram_recheck(tracked: list[dict[str, Any]], label: str) -> tuple[list[dict[str, Any]], str]:
+    if not tracked:
+        return [], "No niche reel found in the last 24h"
+    raw = apify_run("apify~instagram-scraper",
+                    {"directUrls": [r["url"] for r in tracked], "resultsType": "details", "resultsLimit": 1})
+    now_by_id: dict[str, dict[str, Any]] = {}
+    for item in raw:
+        rec = reel_record(item)
+        if rec:
+            now_by_id[rec["id"]] = rec
+    if len(now_by_id) < len(tracked) / 2:        # fallback: re-run discovery and match
+        for rec in instagram_discover():
+            now_by_id.setdefault(rec["id"], rec)
+
+    for r in tracked:
+        after = now_by_id.get(r["id"])
+        r["likes_after"] = after["likes"] if after else None
+        r["like_gain"] = (after["likes"] - r["likes"]) if after else None
+    measured = [r for r in tracked if r["like_gain"] is not None]
+    passed = sorted([r for r in measured if r["like_gain"] >= IG_MIN_GAIN], key=lambda r: r["like_gain"], reverse=True)
+    if passed:
+        return passed[:3], f"{label}; +{IG_MIN_GAIN:,} likes in {WAIT_MINUTES} min (confirmed)"
+    best = sorted(measured or tracked, key=lambda r: (r.get("like_gain") or 0, r["likes_per_hour"]), reverse=True)
+    return best[:3], f"{label}; NOTE no reel gained {IG_MIN_GAIN:,} likes in {WAIT_MINUTES} min — best growers shown"
 
 
 # =============================================================================
-# 5. UPDATE GOOGLE SHEET & GOOGLE DOC
+# 4. SCRIPTS: research the topic, then write OUR version (never copy, never "according to X")
 # =============================================================================
-def get_google_credentials():
+STYLE = """DHAIRYAM SCRIPT STYLE (Tenglish = Telugu written in English letters, natural spoken Telugu):
+- Line 1 = HOOK: a shocking question with a number/fact, like "Mee finger lo current undaa?" or
+  "America ANNI flights aapesindaa?". No greeting before the hook.
+- Then: what happened, in simple words, with exact numbers, dates and names.
+- Then: 2-3 NEW points the original video did NOT say (the history behind it, how it works,
+  what it means for India / for the viewer's phone, job, money or safety).
+- Then: our own take (1-2 lines, confident, India first).
+- End: one comment question + "follow avvandi" CTA.
+- 1,400-1,600 characters. Short punchy sentences. Tech words stay in English.
+HARD RULES:
+- NEVER say "according to <channel/creator/outlet>", "ee video lo", "CNN cheppindi" or name the
+  creator/channel we got the idea from. We are the source; facts are stated directly.
+- NEVER copy sentences from the original. Use it only for the TOPIC.
+- Only facts you verified in the research. No made-up numbers."""
+
+
+def research(topic_hint: str) -> str:
+    prompt = f"""Research this topic with Google Search and give me verified facts (today is
+{NOW_IST.strftime('%d %b %Y')}). Topic idea (from a viral post — use only as a starting point):
+{topic_hint}
+
+Give: what exactly happened (who, what, when, numbers), the background/history, how it works
+(simple), why it matters for India and for a normal person, 3 surprising facts most people don't know,
+and 2-4 reliable source URLs. Plain text, bullet points."""
+    try:
+        return call_gemini(prompt, want_json=False, search=True)
+    except Exception as exc:
+        log(f"[RESEARCH WARN] {exc}")
+        return ""
+
+
+def write_script(kind: str, topic_hint: str) -> dict[str, str]:
+    facts = research(topic_hint)
+    prompt = f"""You write {kind} scripts for the Dhairyam pages.
+{STYLE}
+
+TOPIC IDEA (from a viral post — do NOT copy it, do NOT mention who posted it):
+{topic_hint}
+
+VERIFIED RESEARCH (use these facts):
+{facts or "(research unavailable — keep to facts in the topic idea only)"}
+
+Return JSON: {{"title": "punchy title under 80 chars", "script": "the Tenglish script",
+"new_points_added": ["the points we added that the original did not have"],
+"fact_sources": ["URLs from the research"]}}"""
+    try:
+        out = call_gemini(prompt)
+        # Safety net: strip any "according to X" that slipped through.
+        out["script"] = re.sub(r"(?i)\b(according to|as per)\s+[A-Z][\w .&-]{1,40}[,:]?\s*", "", out.get("script", ""))
+        return out
+    except Exception as exc:
+        log(f"[SCRIPT WARN] {exc}")
+        return {"title": topic_hint[:80], "script": f"[Gemini failed: {exc}]", "new_points_added": [], "fact_sources": []}
+
+
+# =============================================================================
+# 5. GOOGLE SHEET + DOC + EMAIL
+# =============================================================================
+def google_creds():
     info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/documents",
-    ]
-    return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    return service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/documents"])
 
 
-def update_google_sheet(
-    creds,
-    yt_videos: list[dict[str, Any]],
-    yt_pass: str,
-    insta_reels: list[dict[str, Any]],
-    insta_pass: str,
-    major_news: list[dict[str, Any]],
-) -> None:
-    sheets = build("sheets", "v4", credentials=creds)
-    today_str = NOW_IST.strftime("%d-%b-%Y %I:%M %p IST")
-
-    rows: list[list[Any]] = [
-        [f"Daily Viral Tech & Outlier Tracker — Updated: {today_str}"],
-        [],
-        ["Youtube", f"Rule: {yt_pass}", "Subs / Format", "Views", "Comments / Cross-Match", "Link"],
-    ]
-    for idx in range(3):
-        if idx < len(yt_videos):
-            v = yt_videos[idx]
-            sub_fmt = f"{v.get('subscribers', 0):,} subs | {v.get('format', '')}"
-            cmt_info = f"{v.get('recent_comments', '')} | {v.get('cross_match', '')}"
-            rows.append([idx + 1, v["title"], sub_fmt, v["views"], cmt_info, v["url"]])
-        else:
-            rows.append([idx + 1, "No qualifying video found", "", "", "", ""])
-
-    rows.append([])
-    rows.append(["Insta", f"Rule: {insta_pass}", "Account", "Plays", "Likes / Comments", "Link"])
-    for idx in range(3):
-        if idx < len(insta_reels):
-            r = insta_reels[idx]
-            lc = f"{r['likes']:,} likes / {r['comments']} cmts"
-            rows.append([idx + 1, r["caption"], f"@{r['owner']}", r["plays"], lc, r["url"]])
-        else:
-            rows.append([idx + 1, "No qualifying reel found", "", "", "", ""])
-
-    rows.append([])
-    rows.append(["News", "Major Tech & Breakthrough News (Past 3 Days)", "Source", "Why Viral", "", "Link"])
-    for idx in range(3):
-        if idx < len(major_news):
-            n = major_news[idx]
-            rows.append([idx + 1, n["title"], n["source"], n.get("why_viral", ""), "", n["url"]])
-        else:
-            rows.append([idx + 1, "No item", "", "", "", ""])
-
-    range_name = f"{GOOGLE_SHEET_TAB}!A1:F20"
-    sheets.spreadsheets().values().clear(spreadsheetId=GOOGLE_SHEET_ID, range=range_name).execute()
-    sheets.spreadsheets().values().update(
-        spreadsheetId=GOOGLE_SHEET_ID,
-        range=f"{GOOGLE_SHEET_TAB}!A1",
-        valueInputOption="USER_ENTERED",
-        body={"values": rows},
-    ).execute()
-    print("[SHEET] Updated Creatives tab successfully.")
+SHEET_HEADER = ["Date (IST)", "Type", "Rank", "Title / Caption", "Creator / Outlet", "Subs", "Hours live",
+                "Views / Likes (1st check)", "2nd check", f"Gain in {WAIT_MINUTES} min", "Outlier / Speed",
+                "Recent comments", "Rule passed", "Why it fits (AI)", "Link", "Used for script?"]
 
 
-def prepend_scripts_to_google_doc(creds, generated: dict[str, Any]) -> None:
+def sheet_rows(yt, yt_rule, ig, ig_rule, news, news_rule) -> list[list[Any]]:
+    date = NOW_IST.strftime("%d-%b-%Y %I:%M %p")
+    rows = []
+    for i, r in enumerate(ig):
+        rows.append([date, "Instagram", i + 1, r["caption"][:200], "@" + r["owner"], "", r.get("hours_live", ""),
+                     r["likes"], r.get("likes_after", ""), r.get("like_gain", ""), f"{r.get('likes_per_hour', 0):,} likes/h",
+                     r["comments"], ig_rule, r.get("fit_reason", ""), r["url"], "YES" if i == 0 else ""])
+    for i, v in enumerate(yt):
+        rows.append([date, "YouTube", i + 1, v["title"], v["channel"], v["subscribers"], v.get("hours_live", ""),
+                     v["views"], v.get("views_after", ""), v.get("view_gain", ""),
+                     f"{v['outlier']}x subs | {v['views_per_hour']:,} views/h", v.get("recent_comments", ""),
+                     yt_rule, v.get("fit_reason", ""), v["url"], "YES" if i == 0 else ""])
+    if news:
+        rows.append([date, "Tech News", 1, news.get("title", ""), ", ".join(news.get("outlets", []))[:200], "", "",
+                     "", "", "", f"{news.get('outlet_count', '')} outlets", "", news_rule,
+                     news.get("why_booming", ""), "\n".join(news.get("urls", [])), "YES"])
+    if not rows:
+        rows.append([date, "-", "", "Nothing qualified today", "", "", "", "", "", "", "", "", "", "", "", ""])
+    return rows
+
+
+def update_sheet(creds, rows: list[list[Any]]) -> None:
+    sheets = build("sheets", "v4", credentials=creds).spreadsheets()
+    tabs = {s["properties"]["title"] for s in sheets.get(spreadsheetId=GOOGLE_SHEET_ID).execute()["sheets"]}
+    adds = [{"addSheet": {"properties": {"title": t}}} for t in (GOOGLE_SHEET_TAB, GOOGLE_HISTORY_TAB) if t not in tabs]
+    if adds:
+        sheets.batchUpdate(spreadsheetId=GOOGLE_SHEET_ID, body={"requests": adds}).execute()
+
+    # Today's view
+    sheets.values().clear(spreadsheetId=GOOGLE_SHEET_ID, range=f"'{GOOGLE_SHEET_TAB}'!A1:Z100").execute()
+    sheets.values().update(spreadsheetId=GOOGLE_SHEET_ID, range=f"'{GOOGLE_SHEET_TAB}'!A1",
+                           valueInputOption="USER_ENTERED",
+                           body={"values": [[f"Today's picks — {NOW_IST.strftime('%d %b %Y %I:%M %p IST')}"],
+                                            SHEET_HEADER] + rows}).execute()
+    # History (append forever)
+    existing = sheets.values().get(spreadsheetId=GOOGLE_SHEET_ID, range=f"'{GOOGLE_HISTORY_TAB}'!A1:A1").execute()
+    body = rows if existing.get("values") else [SHEET_HEADER] + rows
+    sheets.values().append(spreadsheetId=GOOGLE_SHEET_ID, range=f"'{GOOGLE_HISTORY_TAB}'!A1",
+                           valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS",
+                           body={"values": body}).execute()
+    log("[SHEET] Creatives + History updated.")
+
+
+def doc_section(n: int, label: str, s: dict[str, str] | None, ref_links: list[str], rule: str) -> str:
+    if not s:
+        return f"{n}. {label}\nNothing qualified today ({rule}).\n\n"
+    added = "\n".join(f"  + {p}" for p in s.get("new_points_added", []))
+    facts = "\n".join(f"  - {u}" for u in s.get("fact_sources", [])[:4])
+    refs = "\n".join(f"  - {u}" for u in ref_links)
+    return (f"{n}. {label}: {s.get('title', '')}  ({len(s.get('script', ''))} chars)\n"
+            f"{s.get('script', '').strip()}\n\n"
+            f"Our added points:\n{added}\n"
+            f"Fact sources:\n{facts}\n"
+            f"Original viral post (to re-check, NOT to read out):\n{refs}\n"
+            f"Rule passed: {rule}\n\n")
+
+
+def prepend_doc(creds, block: str) -> None:
     docs = build("docs", "v1", credentials=creds)
-    today_header = NOW_IST.strftime("%d %b %Y — 10:00 AM IST")
-
-    s_insta = generated.get("script_insta", "").strip()
-    s_yt = generated.get("script_yt", "").strip()
-    s_news = generated.get("script_news", "").strip()
-
-    block = (
-        f"==================================================\n"
-        f"DATE: {today_header}\n"
-        f"==================================================\n\n"
-        f"1. INSTAGRAM REEL SCRIPT (Single Topic | {len(s_insta)} chars)\n"
-        f"{s_insta}\n\n"
-        f"2. YOUTUBE SCRIPT (Single Topic | {len(s_yt)} chars)\n"
-        f"{s_yt}\n\n"
-        f"3. MAJOR TECH NEWS SCRIPT (Single Topic | {len(s_news)} chars)\n"
-        f"{s_news}\n\n\n"
-    )
-
-    docs.documents().batchUpdate(
-        documentId=GOOGLE_DOC_ID,
-        body={"requests": [{"insertText": {"location": {"index": 1}, "text": block}}]},
-    ).execute()
-    print("[DOC] Prepended 3 Dhairyam Tech scripts to Tech Gemini Doc.")
+    docs.documents().batchUpdate(documentId=GOOGLE_DOC_ID,
+                                 body={"requests": [{"insertText": {"location": {"index": 1}, "text": block}}]}).execute()
+    log("[DOC] Scripts added on top.")
 
 
-# =============================================================================
-# 6. SEND DAILY 10:00 AM IST EMAIL SUMMARY (GMAIL SMTP)
-# =============================================================================
-def send_daily_email(generated: dict[str, Any]) -> None:
-    today_label = NOW_IST.strftime("%d %b %Y")
-    subject = f"Daily Viral Tech & Outlier Brief — {today_label}"
-
-    yt_line = generated.get("yt_short_title", "No major YouTube outlier today")
-    insta_line = generated.get("insta_short_title", "No major Instagram Reel today")
-    news_line = generated.get("news_short_title", "Top Major Tech News updated")
-
-    html_body = f"""
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
-      <h2 style="margin-bottom: 12px;">Daily Viral Brief ({today_label} — 10:00 AM IST)</h2>
-      <p><strong>1. YouTube Outlier:</strong> {yt_line}</p>
-      <p><strong>2. Instagram Educational/Viral:</strong> {insta_line}</p>
-      <p><strong>3. Major Tech News (72h):</strong> {news_line}</p>
-      <hr style="border: none; border-top: 1px solid #ddd; margin: 16px 0;" />
-      <p>
-        <strong>Google Sheet (All 3 Tables &amp; Links):</strong>
-        <a href="{SHEET_URL}">Open Gemini Tech Sheet</a><br/>
-        <strong>Google Doc (3 Dhairyam Tech Scripts + Sources):</strong>
-        <a href="{DOC_URL}">Open Tech Gemini Doc</a>
-      </p>
-    </div>
-    """
-
+def send_email(lines: list[str]) -> None:
+    today = NOW_IST.strftime("%d %b %Y")
+    items = "".join(f"<p>{l}</p>" for l in lines)
+    html = (f"<div style='font-family:Arial;line-height:1.6;color:#111'><h2>Daily Viral Brief — {today}</h2>{items}"
+            f"<hr/><p><a href='{DOC_URL}'>Open scripts (Doc)</a> · <a href='{SHEET_URL}'>Check links &amp; numbers (Sheet)</a></p></div>")
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = GMAIL_ADDRESS
-    msg["To"] = RECIPIENT_EMAIL
-    msg.attach(MIMEText(html_body, "html"))
-
+    msg["Subject"], msg["From"], msg["To"] = f"Daily Viral Brief — {today}", GMAIL_ADDRESS, RECIPIENT_EMAIL
+    msg.attach(MIMEText(html, "html"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         server.sendmail(GMAIL_ADDRESS, [RECIPIENT_EMAIL], msg.as_string())
-    print(f"[EMAIL] Sent daily brief to {RECIPIENT_EMAIL}.")
+    log(f"[EMAIL] Sent to {RECIPIENT_EMAIL}.")
 
 
 # =============================================================================
 # MAIN
 # =============================================================================
-def main() -> None:
-    print(f"[START] Running Daily Tech & Outlier Agent at {NOW_IST.isoformat()}")
-    major_news, tech_queries = fetch_major_news_and_queries()
-    yt_videos, yt_pass = run_youtube_waterfall(tech_queries)
-    insta_reels, insta_pass = run_instagram_pipeline()
-    generated = generate_scripts_and_titles(yt_videos, insta_reels, major_news)
+def safe(fn, *args, default=None):
+    try:
+        return fn(*args)
+    except Exception as exc:
+        log(f"[ERROR] {fn.__name__}: {exc}")
+        return default
 
-    creds = get_google_credentials()
-    update_google_sheet(creds, yt_videos, yt_pass, insta_reels, insta_pass, major_news)
-    prepend_scripts_to_google_doc(creds, generated)
-    send_daily_email(generated)
-    print("[DONE] Pipeline finished cleanly.")
+
+def main() -> None:
+    log(f"[START] {NOW_IST.isoformat()} | wait {WAIT_MINUTES} min between checks")
+
+    # First check (snapshot)
+    ig_tracked, ig_label = safe(run_instagram_snapshot, default=([], "Instagram step failed"))
+    yt, yt_rule = safe(run_youtube_waterfall, default=([], "YouTube step failed"))
+    news, news_rule = safe(run_news_waterfall, default=(None, "News step failed"))
+
+    # Wait, then second check (like you do by sending it to your other account)
+    if WAIT_MINUTES > 0 and (ig_tracked or yt):
+        log(f"[WAIT] sleeping {WAIT_MINUTES} min before the 2nd check...")
+        time.sleep(WAIT_MINUTES * 60)
+    ig, ig_rule = safe(run_instagram_recheck, ig_tracked, ig_label, default=(ig_tracked[:3], ig_label))
+    safe(recheck_youtube, yt)
+    if yt:  # fastest-growing small-channel video first
+        yt.sort(key=lambda v: (v.get("view_gain") or 0, v["outlier"]), reverse=True)
+
+    # Scripts (topic only -> research -> our own version)
+    s_ig = write_script("Instagram Reel", f"{ig[0].get('topic', '')}: {ig[0]['caption']}") if ig else None
+    s_yt = write_script("YouTube long video", f"{yt[0].get('topic', '')}: {yt[0]['title']}. {yt[0]['description']}") if yt else None
+    s_news = write_script("tech news reel", f"{news['title']}. {news.get('summary', '')}") if news else None
+
+    block = (f"==================================================\n"
+             f"DATE: {NOW_IST.strftime('%d %b %Y — %I:%M %p IST')}\n"
+             f"==================================================\n\n"
+             + doc_section(1, "INSTAGRAM", s_ig, [ig[0]["url"]] if ig else [], ig_rule)
+             + doc_section(2, "YOUTUBE", s_yt, [yt[0]["url"]] if yt else [], yt_rule)
+             + doc_section(3, "MAJOR TECH NEWS", s_news, news.get("urls", []) if news else [], news_rule)
+             + "\n")
+
+    creds = google_creds()
+    safe(update_sheet, creds, sheet_rows(yt, yt_rule, ig, ig_rule, news, news_rule))
+    safe(prepend_doc, creds, block)
+    safe(send_email, [
+        f"<b>1. Instagram:</b> {(s_ig or {}).get('title', 'nothing qualified')} <i>({ig_rule})</i>",
+        f"<b>2. YouTube:</b> {(s_yt or {}).get('title', 'nothing qualified')} <i>({yt_rule})</i>",
+        f"<b>3. Tech news:</b> {(s_news or {}).get('title', 'nothing qualified')} <i>({news_rule})</i>",
+    ])
+    log("[DONE]")
 
 
 if __name__ == "__main__":

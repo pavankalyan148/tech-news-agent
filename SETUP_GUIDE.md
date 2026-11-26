@@ -1,35 +1,46 @@
-# Daily Viral Tech & India News Agent — 5-Minute Cloud Setup Guide
+# Daily Viral Agent — how it works & setup
 
-This package runs **100% free online** on GitHub Actions every morning at **10:00 AM IST** (`04:30 UTC`).
+Runs free on GitHub Actions. Scripts land in your Google Doc by ~10 AM IST.
 
-## Step 1: Create a Gmail App Password (30 seconds)
-1. Open `https://myaccount.google.com/apppasswords` (make sure 2-Step Verification is enabled on your Google account).
-2. Name the app `Tech-News-Agent` and click **Create**.
-3. Copy the 16-character password (no spaces needed)—this is your `GMAIL_APP_PASSWORD`.
+## What it does every day
+1. **Instagram** — finds reels from the last 24 h with **100K+ likes** (or very fast likes),
+   keeps only **educational, niche** ones (tech, AI, science facts, defence, geopolitics, India stories),
+   notes the likes, **waits 75 min**, checks again, and keeps reels that gained **5,000+ likes**.
+2. **YouTube (long videos)** — 12 h → 24 h → 48 h. Only **small channels** (≤300K subs), long videos (4 min+),
+   **100K+ views**, views ≥ subscribers (outlier), **3+ viewer comments in the last 3 h**.
+   News networks / big channels (CNN, BBC, NDTV…) are never picked.
+3. **Major tech news** — 12 h → 24 h → 48 h. The story covered by the most different outlets (3+).
+4. **Scripts** — the viral post is used for the **topic only**. Gemini researches it on Google Search,
+   adds new points + an India angle, and writes a fresh Tenglish script. No "according to CNN", no copying.
+5. **Google Sheet** — `Creatives` tab = today's picks with all numbers and links;
+   `History` tab = every day appended, so you can check the AI's picks.
+6. **Gmail** summary with links.
 
-## Step 2: Enable Sheets & Docs APIs + Service Account (2 minutes)
-1. Open `console.cloud.google.com` and confirm your **`Tech-News-Agent`** project is selected.
-2. Search and **Enable** both:
-   - **Google Sheets API**
-   - **Google Docs API**
-3. In the left menu, go to **IAM & Admin → Service Accounts** → click **+ Create Service Account**.
-   - Name it `sheet-doc-writer` → click **Create and Continue** → **Done**.
-4. Click the new service account → open the **Keys** tab → **Add Key → Create new key → JSON** → download the `.json` file.
-5. Copy the service account's email address (ends in `@tech-news-agent-...iam.gserviceaccount.com`), then click **Share** on BOTH your Google Sheet (**Gemini Tech**) and Google Doc (**Tech Gemini**) and give that email **Editor** access.
+## Secrets (Settings → Secrets and variables → Actions → Secrets)
+`YOUTUBE_API_KEY`, `GEMINI_API_KEY`, `APIFY_API_TOKEN`, `GOOGLE_SERVICE_ACCOUNT_JSON`,
+`GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RECIPIENT_EMAIL`.
+The Sheet and Doc must be shared (Editor) with the service-account email.
 
-## Step 3: Upload to a Free Private GitHub Repository (2 minutes)
-1. Go to `github.com/new` and create a **Private** repository named `tech-news-agent`.
-2. Unzip `tech_news_agent_pipeline.zip` and upload all files (`agent.py`, `requirements.txt`, `SETUP_GUIDE.md`, and `.github/workflows/daily_tech_news.yml`).
-3. In your repo, go to **Settings → Secrets and variables → Actions → New repository secret** and add these 7 secrets:
-   - `YOUTUBE_API_KEY` — Your YouTube Data API v3 key
-   - `GEMINI_API_KEY` — Your Google AI Studio Gemini API key
-   - `APIFY_API_TOKEN` — Your regenerated Apify personal API token
-   - `GOOGLE_SERVICE_ACCOUNT_JSON` — Full contents of the downloaded `.json` key file
-   - `GMAIL_ADDRESS` — Your Gmail address (`vulluri.pavan@gmail.com`)
-   - `GMAIL_APP_PASSWORD` — Your 16-character Gmail App Password from Step 1
-   - `RECIPIENT_EMAIL` — Where you want the daily email sent (`vulluri.pavan@gmail.com`)
+## Change the rules without code (Settings → Secrets and variables → Actions → **Variables**)
+| Variable | Default | Meaning |
+|---|---|---|
+| `WAIT_MINUTES` | 75 | Gap between 1st and 2nd check |
+| `IG_MIN_LIKES` | 100000 | Instagram viral likes (24 h) |
+| `IG_FAST_LIKES_PER_HOUR` | 4000 | Or this many likes per hour |
+| `IG_MIN_GAIN` | 5000 | Likes gained during the wait |
+| `YT_MIN_VIEWS` | 100000 | YouTube views |
+| `YT_MAX_SUBS` | 300000 | Max subscribers = "small channel" |
+| `YT_MIN_OUTLIER` | 1.0 | Views ÷ subscribers |
+| `YT_MIN_RECENT_COMMENTS` | 3 | Viewer comments in last 3 h |
+| `NEWS_MIN_SOURCES` | 3 | Outlets covering a story |
+| `GEMINI_MODELS` | auto | Comma list to force a Gemini model |
 
-## Step 4: Test Immediately
-1. Open the **Actions** tab in your GitHub repository.
-2. Click **Daily Viral Tech & India News Agent (10 AM IST)** → click **Run workflow**.
-3. Within ~1–2 minutes, check your **Gemini Tech** Sheet, **Tech Gemini** Doc, and Gmail inbox!
+## Why runs were late before
+GitHub starts scheduled jobs late (yesterday's started ~9.5 h late) or skips them at busy times.
+The workflow now has 5 start times (08:17, 08:47, 09:17, 10:47, 13:47 IST); the first one that starts runs,
+the rest skip. GitHub also **pauses schedules after 60 days with no commits** — if emails stop, open
+Actions and click "Enable workflow".
+
+## Test now
+Actions → **Daily Viral Agent** → **Run workflow** → set wait to `0` for a quick test (skips the 2nd check),
+or leave `75` for the real method.
