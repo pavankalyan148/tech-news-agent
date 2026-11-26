@@ -94,9 +94,12 @@ WAIT_MINUTES = env_int("WAIT_MINUTES", 75)            # gap between 1st and 2nd 
 IG_MIN_LIKES = env_int("IG_MIN_LIKES", 100_000)        # viral in 24 h
 IG_FAST_LIKES_PER_HOUR = env_int("IG_FAST_LIKES_PER_HOUR", 4_000)  # or "fast likes"
 IG_MIN_GAIN = env_int("IG_MIN_GAIN", 5_000)            # likes gained during the wait
-IG_RESULTS_PER_HASHTAG = env_int("IG_RESULTS_PER_HASHTAG", 20)
-IG_RESULTS_PER_HANDLE = env_int("IG_RESULTS_PER_HANDLE", 3)
-IG_MAX_TRACKED = env_int("IG_MAX_TRACKED", 12)         # reels re-checked after the wait
+IG_RESULTS_PER_HASHTAG = env_int("IG_RESULTS_PER_HASHTAG", 10)
+IG_RESULTS_PER_HANDLE = env_int("IG_RESULTS_PER_HANDLE", 2)
+IG_MAX_TRACKED = env_int("IG_MAX_TRACKED", 8)          # reels re-checked after the wait
+# Apify free plan ~ $0.0026 per result. 90/day ~ $7/month (under the $9 free credit).
+APIFY_MAX_RESULTS_PER_DAY = env_int("APIFY_MAX_RESULTS_PER_DAY", 90)
+_apify_used = 0
 
 YT_MIN_VIEWS = env_int("YT_MIN_VIEWS", 100_000)
 YT_MAX_SUBS = env_int("YT_MAX_SUBS", 300_000)          # "small channel"
@@ -141,8 +144,8 @@ YT_BASE_QUERIES = [
 ]
 
 INSTA_HASHTAGS = [
-    "technews", "ainews", "techfacts", "sciencefacts",
-    "geopolitics", "indiandefence", "telugunews", "didyouknow",
+    "technews", "ainews", "techfacts",
+    "geopolitics", "indiandefence", "telugunews",
 ]
 INSTA_STARTER_HANDLES = [
     "varunmayya", "thinkschool", "abhiandniyu", "techburner", "trakintech",
@@ -519,13 +522,23 @@ def recheck_youtube(videos: list[dict[str, Any]]) -> None:
 # =============================================================================
 # 3. INSTAGRAM: SNAPSHOT -> WAIT -> RE-CHECK (your manual method)
 # =============================================================================
-def apify_run(actor: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+def apify_run(actor: str, payload: dict[str, Any], max_items: int) -> list[dict[str, Any]]:
+    """Run an Apify actor with a hard cap on paid results (daily budget guard)."""
+    global _apify_used
+    max_items = min(max_items, APIFY_MAX_RESULTS_PER_DAY - _apify_used)
+    if max_items <= 0:
+        log(f"[APIFY] daily budget of {APIFY_MAX_RESULTS_PER_DAY} results reached; skipping {actor}")
+        return []
     try:
         r = requests.post(
             f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items",
-            params={"token": APIFY_API_TOKEN}, json=payload, timeout=300)
+            params={"token": APIFY_API_TOKEN, "maxItems": max_items, "maxTotalChargeUsd": round(max_items * 0.003, 2)},
+            json=payload, timeout=300)
         if r.status_code in (200, 201) and isinstance(r.json(), list):
-            return r.json()
+            items = r.json()[:max_items]
+            _apify_used += len(items)
+            log(f"[APIFY] {actor}: {len(items)} results (used {_apify_used}/{APIFY_MAX_RESULTS_PER_DAY} today)")
+            return items
         log(f"[APIFY WARN] {actor}: HTTP {r.status_code} {r.text[:200]}")
     except Exception as exc:
         log(f"[APIFY WARN] {actor}: {exc}")
@@ -554,9 +567,11 @@ def reel_record(item: dict[str, Any]) -> dict[str, Any] | None:
 
 def instagram_discover() -> list[dict[str, Any]]:
     raw = apify_run("apify~instagram-hashtag-scraper",
-                    {"hashtags": INSTA_HASHTAGS, "resultsType": "reels", "resultsLimit": IG_RESULTS_PER_HASHTAG})
+                    {"hashtags": INSTA_HASHTAGS, "resultsType": "reels", "resultsLimit": IG_RESULTS_PER_HASHTAG},
+                    len(INSTA_HASHTAGS) * IG_RESULTS_PER_HASHTAG)
     raw += apify_run("apify~instagram-reel-scraper",
-                     {"username": INSTA_STARTER_HANDLES, "resultsLimit": IG_RESULTS_PER_HANDLE})
+                     {"username": INSTA_STARTER_HANDLES, "resultsLimit": IG_RESULTS_PER_HANDLE},
+                     len(INSTA_STARTER_HANDLES) * IG_RESULTS_PER_HANDLE)
     reels: dict[str, dict[str, Any]] = {}
     for item in raw:
         rec = reel_record(item)
@@ -594,15 +609,13 @@ def run_instagram_recheck(tracked: list[dict[str, Any]], label: str) -> tuple[li
     if not tracked:
         return [], "No niche reel found in the last 24h"
     raw = apify_run("apify~instagram-scraper",
-                    {"directUrls": [r["url"] for r in tracked], "resultsType": "details", "resultsLimit": 1})
+                    {"directUrls": [r["url"] for r in tracked], "resultsType": "details", "resultsLimit": 1},
+                    len(tracked))
     now_by_id: dict[str, dict[str, Any]] = {}
     for item in raw:
         rec = reel_record(item)
         if rec:
             now_by_id[rec["id"]] = rec
-    if len(now_by_id) < len(tracked) / 2:        # fallback: re-run discovery and match
-        for rec in instagram_discover():
-            now_by_id.setdefault(rec["id"], rec)
 
     for r in tracked:
         after = now_by_id.get(r["id"])
