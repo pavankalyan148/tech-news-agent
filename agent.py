@@ -632,59 +632,145 @@ def run_instagram_recheck(tracked: list[dict[str, Any]], label: str) -> tuple[li
 # =============================================================================
 # 4. SCRIPTS: research the topic, then write OUR version (never copy, never "according to X")
 # =============================================================================
-STYLE = """DHAIRYAM SCRIPT STYLE (Tenglish = Telugu written in English letters, natural spoken Telugu):
-- Line 1 = HOOK: a shocking question with a number/fact, like "Mee finger lo current undaa?" or
-  "America ANNI flights aapesindaa?". No greeting before the hook.
-- Then: what happened, in simple words, with exact numbers, dates and names.
-- Then: 2-3 NEW points the original video did NOT say (the history behind it, how it works,
-  what it means for India / for the viewer's phone, job, money or safety).
-- Then: our own take (1-2 lines, confident, India first).
-- End: one comment question + "follow avvandi" CTA.
-- 1,400-1,600 characters. Short punchy sentences. Tech words stay in English.
+STYLE = """DHAIRYAM SCRIPT STYLE (Tenglish = Telugu written in English letters, natural spoken Telugu).
+Write it exactly like the EXAMPLE below: same flow, same energy, same line breaks.
+
+STRUCTURE:
+1. Line 1 = HOOK TITLE: shock question + the biggest number. e.g. "FIFA Hack aindhaa? 12 GB sensitive data leak!"
+2. What happened: 2-3 lines with EXACT names, numbers, dates (who did it, what, how much).
+3. Twist line starting "Kani ikkada shock ayye vishayam enti ante —" with the most surprising fact.
+4. 1 line on the official response / real scale.
+5. "Deeni nunchi manam nerchukovalsindi enti?" then a NUMBERED list 1. 2. 3. of points the original
+   post did NOT say: a related recent case, how it works, and the India angle (our apps, jobs, money, safety).
+6. One practical tip for the viewer + "follow avvandi" + ask for their opinion in comments.
+- 900-1,500 characters. Short paragraphs separated by line breaks. Tech words stay in English.
+
 HARD RULES:
-- NEVER say "according to <channel/creator/outlet>", "ee video lo", "CNN cheppindi" or name the
-  creator/channel we got the idea from. We are the source; facts are stated directly.
-- NEVER copy sentences from the original. Use it only for the TOPIC.
-- Only facts you verified in the research. No made-up numbers."""
+- NEVER write "according to <channel/creator/outlet>", "ee video lo", "CNN cheppindi", "prakaram",
+  or name the creator/channel/page we got the idea from. State facts directly; we are the source.
+- NEVER copy sentences from the original post. Use it only for the TOPIC.
+- Use ONLY facts from the research. Every number/name must come from it. No vague filler like
+  "entho data" or "chala mandi" when the research has the real number.
+- No greeting ("Hello Dhairyam Tech family" etc.) before the hook."""
+
+STYLE_EXAMPLE = """FIFA Hack aindhaa? 12 GB sensitive data leak!
+World's biggest football body FIFA paina oka pedda cyberattack jarigindi ani official ga confirm chesaru! Handsome Boy Hacking Club ane hacking group, FIFA nunchi 12 GB internal files steal chesamu ani claim chestondi. Indulo identity documents, financial records, mariyu executive info unnayi.
+Kani ikkada shock ayye vishayam enti ante — hackers FIFA systems ni break cheyaledu, FIFA staff laaga natinchi (impersonation) internal files access chesaru!
+Idi millions of fans data kaakapoyina, limited personal & business info leak ayyindi ani FIFA cheppindi.
+Deeni nunchi manam nerchukovalsindi enti?
+
+1. FIFA lanti global giant ke social engineering attacks nunchi tappinchukovadam kashtam aindi.
+2. Recent ga Spain lo LaLiga fans data kuda hack ayyindi — ante sports bodies ippudu hackers main target!
+3. India lo kuda manam use chese sports & ticketing apps lo mana data entha safe? Strong cybersecurity audits mariyu awareness chala avasaram.
+
+Mee passwords ni regular ga change cheyandi, unknown emails & links ni nammakandi! Ilanti genuine tech & cyber updates kosam follow avvandi, and mee opinion kinda comments lo cheppandi!"""
 
 
-def research(topic_hint: str) -> str:
-    prompt = f"""Research this topic with Google Search and give me verified facts (today is
-{NOW_IST.strftime('%d %b %Y')}). Topic idea (from a viral post — use only as a starting point):
-{topic_hint}
+def research(topic_hint: str, ref_urls: list[str]) -> tuple[str, list[str]]:
+    """Google-Search-grounded research. Returns (facts text, real source links from grounding)."""
+    prompt = f"""Use Google Search to research this story (today is {NOW_IST.strftime('%d %b %Y')}).
+STORY: {topic_hint}
+Known links about it: {', '.join(ref_urls[:3]) or 'none'}
 
-Give: what exactly happened (who, what, when, numbers), the background/history, how it works
-(simple), why it matters for India and for a normal person, 3 surprising facts most people don't know,
-and 2-4 reliable source URLs. Plain text, bullet points."""
-    try:
-        return call_gemini(prompt, want_json=False, search=True)
-    except Exception as exc:
-        log(f"[RESEARCH WARN] {exc}")
-        return ""
+Give hard facts only, as bullet points:
+- WHO exactly (company, group, person names), WHAT happened, WHEN, and every NUMBER (GB, users, $, %, dates)
+- HOW it happened (the method / the twist most people miss)
+- Official response and real scale
+- 1-2 similar RECENT cases (with names and dates)
+- Why it matters for India / Indian users (apps, jobs, money, safety)
+- 3 surprising facts
+If something is not confirmed, say "unconfirmed"."""
+    last_err: Exception | None = None
+    models = [m for m in GEMINI_MODELS if "lite" not in m] or GEMINI_MODELS  # lite models research badly
+    for model_name in models:
+        try:
+            resp = gemini_client.models.generate_content(
+                model=model_name, contents=prompt, config={"tools": [{"google_search": {}}]})
+            text = (resp.text or "").strip()
+            sources: list[str] = []
+            try:
+                gm = resp.candidates[0].grounding_metadata
+                for ch in (gm.grounding_chunks or []):
+                    if ch.web and ch.web.uri:
+                        sources.append(f"{ch.web.title or ''} {ch.web.uri}".strip())
+            except Exception:
+                pass
+            if len(text) > 400:
+                log(f"[RESEARCH] {model_name}: {len(text)} chars, {len(sources)} sources")
+                return text, list(dict.fromkeys(sources))[:5]
+            log(f"[RESEARCH WARN] {model_name} returned only {len(text)} chars")
+        except Exception as exc:
+            last_err = exc
+            log(f"[RESEARCH WARN] {model_name}: {str(exc)[:160]}")
+            time.sleep(3)
+    log(f"[RESEARCH FAIL] {last_err}")
+    return "", []
 
 
-def write_script(kind: str, topic_hint: str) -> dict[str, str]:
-    facts = research(topic_hint)
-    prompt = f"""You write {kind} scripts for the Dhairyam pages.
+def parse_script_reply(text: str) -> dict[str, Any]:
+    def section(name: str) -> str:
+        m = re.search(rf"===\s*{name}\s*===\s*(.*?)(?====\s*[A-Z ]+\s*===|\Z)", text, re.S)
+        return m.group(1).strip() if m else ""
+    title = section("TITLE")
+    added = [l.strip(" -*•\t") for l in section("ADDED").splitlines() if l.strip(" -*•\t")]
+    return {"title": title.splitlines()[0] if title else "", "script": section("SCRIPT"), "new_points_added": added}
+
+
+def script_problems(script: str) -> list[str]:
+    probs = []
+    if len(script) < 800:
+        probs.append(f"too short ({len(script)} chars, need 900-1,500)")
+    if len(re.findall(r"\d", script)) < 3:
+        probs.append("not enough exact numbers/facts")
+    if script.count("\n") < 4:
+        probs.append("no line breaks / numbered list")
+    if re.search(r"(?i)\b(according to|prakaram|ee video lo|ee reel lo)\b", script):
+        probs.append("mentions the source/creator (not allowed)")
+    return probs
+
+
+def write_script(kind: str, topic_hint: str, ref_urls: list[str] | None = None) -> dict[str, Any]:
+    ref_urls = ref_urls or []
+    facts, sources = research(topic_hint, ref_urls)
+    base = f"""You write {kind} scripts for the Dhairyam pages (Telugu audience, India first).
 {STYLE}
 
-TOPIC IDEA (from a viral post — do NOT copy it, do NOT mention who posted it):
+EXAMPLE OF A PERFECT SCRIPT (copy this style, NOT its topic):
+<<<
+{STYLE_EXAMPLE}
+>>>
+
+TOPIC (from a viral post — use only the topic, do NOT copy it, do NOT mention who posted it):
 {topic_hint}
 
-VERIFIED RESEARCH (use these facts):
-{facts or "(research unavailable — keep to facts in the topic idea only)"}
+RESEARCH (the only facts you may use):
+{facts or "(research failed — use only facts stated in the topic above, keep it short)"}
 
-Return JSON: {{"title": "punchy title under 80 chars", "script": "the Tenglish script",
-"new_points_added": ["the points we added that the original did not have"],
-"fact_sources": ["URLs from the research"]}}"""
-    try:
-        out = call_gemini(prompt)
-        # Safety net: strip any "according to X" that slipped through.
-        out["script"] = re.sub(r"(?i)\b(according to|as per)\s+[A-Z][\w .&-]{1,40}[,:]?\s*", "", out.get("script", ""))
-        return out
-    except Exception as exc:
-        log(f"[SCRIPT WARN] {exc}")
-        return {"title": topic_hint[:80], "script": f"[Gemini failed: {exc}]", "new_points_added": [], "fact_sources": []}
+Reply in EXACTLY this format, nothing else:
+=== TITLE ===
+<hook title, under 80 chars>
+=== SCRIPT ===
+<the full Tenglish script with line breaks, starting with the hook title line>
+=== ADDED ===
+- <each point we added that the original post did not have>"""
+    out: dict[str, Any] = {}
+    prompt = base
+    for attempt in range(3):
+        try:
+            out = parse_script_reply(call_gemini(prompt, want_json=False))
+        except Exception as exc:
+            log(f"[SCRIPT WARN] {exc}")
+            break
+        probs = script_problems(out.get("script", ""))
+        if not probs:
+            break
+        log(f"[SCRIPT] retry {attempt + 1}: {probs}")
+        prompt = base + "\n\nYOUR LAST DRAFT HAD PROBLEMS: " + "; ".join(probs) + ". Fix them and reply again in the same format."
+    if not out.get("script"):
+        out = {"title": topic_hint[:80], "script": "[Gemini failed to write this script today]", "new_points_added": []}
+    out["script"] = re.sub(r"(?i)\b(according to|as per)\s+[A-Z][\w .&-]{1,40}[,:]?\s*", "", out["script"])
+    out["fact_sources"] = sources
+    return out
 
 
 # =============================================================================
@@ -810,7 +896,8 @@ def main() -> None:
     # Scripts (topic only -> research -> our own version)
     s_ig = write_script("Instagram Reel", f"{ig[0].get('topic', '')}: {ig[0]['caption']}") if ig else None
     s_yt = write_script("YouTube long video", f"{yt[0].get('topic', '')}: {yt[0]['title']}. {yt[0]['description']}") if yt else None
-    s_news = write_script("tech news reel", f"{news['title']}. {news.get('summary', '')}") if news else None
+    s_news = (write_script("tech news reel", f"{news['title']}. {news.get('summary', '')}", news.get("urls", []))
+              if news else None)
 
     block = (f"==================================================\n"
              f"DATE: {NOW_IST.strftime('%d %b %Y — %I:%M %p IST')}\n"
