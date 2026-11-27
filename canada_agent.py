@@ -73,6 +73,11 @@ NEWS_QUERIES = [
     "Canada job fair OR \"international recruitment\" Canada",
     "Canada nurses LMIA OR healthcare workers Canada recruitment",
     "Canada new PR pathway OR provincial nominee draw",
+    "Cognizant OR Infosys OR TCS OR Wipro OR Accenture OR Deloitte OR Capgemini hiring Canada",
+    "Concentrix OR Teleperformance OR Amazon OR Walmart hiring freshers any graduate",
+    "Google OR Microsoft OR Shopify OR RBC OR TD Bank hiring Canada",
+    "Canada startups hiring OR Global Hypergrowth Project",
+    "IRCC immigration levels plan OR PR targets",
 ]
 # region = (hl, gl, ceid)  India + Canada editions so both sides of the story are covered
 NEWS_REGIONS = [("en-IN", "IN", "IN:en"), ("en-CA", "CA", "CA:en")]
@@ -254,6 +259,19 @@ def collect_youtube() -> list[dict[str, Any]]:
 # =============================================================================
 # 3. PICK THE STORIES (Gemini clusters headlines + videos, scores /10)
 # =============================================================================
+# Her most-viewed reels (checked 2026-11-27). Every daily topic must fit one of these.
+PATTERNS = """P1 TOP-N COMPANIES LIST (125K views): "Top 30 companies hiring in Canada" + comment for the sheet.
+P2 BIG COMPANY HIRING CANADA + INDIA (123K): Cognizant / Infosys / Deloitte / Amazon - Canada roles for WP/PR
+   + India roles for freshers, cities, pay, process.
+P3 FRESHERS MASS HIRING, ANY GRADUATE (88K): Concentrix-type BPO / CX / support, Canada (WP/PR) + India, 2022-2026 batches.
+P4 BULK LIST FOR ONE ROLE (61K): "200+ companies hiring Data / Business Analysts" (careers pages, not LinkedIn).
+P5 PR BIG UPDATE (30K): IRCC levels plan, TR-to-PR slots, new PR pathway, big draws, budget.
+P6 STARTUPS / LMIA-EXEMPT (25K): "60+ Canada startups, 500+ roles, 8 need no LMIA (Global Hypergrowth)".
+P7 JOB-SEARCH HACK (23K): Job Bank LMIA filter, hidden job sites, Google ATS search.
+P8 HEALTHCARE / TRADES INTERNATIONAL RECRUITMENT WITH LMIA (19K): nurses, PSW, Alberta Health Services.
+P9 JOB FAIRS / BIG WAREHOUSE HIRING (15K): "39 job fairs in Canada", "Amazon Canada 9,000 jobs $24/h"."""
+
+
 def rank_stories(news: list[dict[str, Any]], videos: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not news and not videos:
         return []
@@ -267,6 +285,11 @@ Keep only stories about: Canada-India relations, Canada immigration/visa/PR/PGWP
 permit rules, Express Entry or PNP draws, Canada jobs/hiring, OR major news that affects Indians living
 overseas (any country: visa rules, deportations, safety, taxes, remittances, students). Drop everything else.
 
+Map each story to ONE of her proven reel patterns (or "none"):
+{PATTERNS}
+Stories that fit no pattern (e.g. US-only visa news) get pattern "none" and score at most 5,
+unless it directly changes things for Indians in Canada.
+
 Score each story:
 - impact (0-4): how many Indians abroad / wanting to go abroad it changes things for, and how much.
   Give the top marks to what wins on the kranthi.in.canada page: a big company hiring in Canada (+ India
@@ -275,13 +298,13 @@ Score each story:
 - buzz (0-3): number of outlets + YouTube views per hour
 - fresh (0-2): newer = higher
 - clarity (0-1): can be explained in a 60 s reel
-score = sum (out of 10).
+score = sum (out of 10); then add +1 for P1-P3 and +0.5 for P4-P6 (max 10).
 
 HEADLINES: {json.dumps(slim_news, ensure_ascii=False)}
 YOUTUBE: {json.dumps(slim_yt, ensure_ascii=False)}
 
 Return JSON list, best first, max 8:
-[{{"headline": "short story headline", "category": "immigration|relations|overseas|jobs",
+[{{"headline": "short story headline", "category": "immigration|relations|overseas|jobs", "pattern": "P2",
 "what_happened": "2 lines", "why_it_matters": "1 line for Indians abroad", "score": 8.5,
 "news_ids": ["n1", ...], "yt_ids": ["y1", ...]}}]"""
     stories = gemini(prompt)
@@ -293,7 +316,7 @@ Return JSON list, best first, max 8:
                         for i in s.get("yt_ids", []) if i in by_id][:3])
         s["outlets"] = sorted({by_id[i]["outlet"] for i in s.get("news_ids", []) if i in by_id})
         s["yt"] = [by_id[i] for i in s.get("yt_ids", []) if i in by_id]
-    stories.sort(key=lambda s: float(s.get("score", 0)), reverse=True)
+    stories.sort(key=lambda s: (s.get("pattern", "none") != "none", float(s.get("score", 0))), reverse=True)
     log(f"[RANK] {len(stories)} stories")
     return stories
 
@@ -441,10 +464,8 @@ STRUCTURE (spoken script, 35-60 s, 600-1,000 characters, short punchy lines):
    ("Evaru dabbulu adigina ivvakandi - official site lo matrame apply cheyandi").
 6. CTA: 'Link kavala? Comment "<ONE KEYWORD IN CAPS>" - nenu official link DM chestha!'
    then "Share with friends" + "Follow @kranthi.in.canada for genuine Canada jobs!"
-TOPICS SHE WINS WITH (most views first): Top-N companies hiring lists, a big company hiring in Canada +
-India together (Cognizant, Concentrix, Amazon, Infosys, Deloitte, Spotify), freshers / any-graduate mass
-hiring, healthcare international recruitment with LMIA, PR news (new PR pathways, draws, budget), career
-pathways (e.g. pharmacist India -> Canada), job-search hacks (Job Bank LMIA filter), job fairs.
+TOPIC PATTERNS SHE WINS WITH (copy the angle of the pattern exactly):
+""" + PATTERNS + """
 HARD RULES: only facts you verified; exact dates/numbers; no made-up jobs, pay or rules; never say
 "ee video lo" or name another creator. Official sources (canada.ca / IRCC / company careers page) beat media.
 She is not an agent: never promise a job or visa."""
@@ -489,7 +510,10 @@ def jobs_topic(jobs: list[dict[str, Any]], scope: str) -> str:
     who = "Indians applying from India" if scope == "india" else "people already in Canada on PGWP / work permit / PR"
     lines = [f"- {j.get('company')}: {j.get('role')} ({j.get('location')}, {j.get('it_or_non_it')}, {j.get('level')}; "
              f"{j.get('who_can_apply')}; salary {j.get('salary') or 'n/a'}; experience {j.get('experience') or 'n/a'}) {j.get('link')}" for j in jobs[:6]]
-    return (f"Real Canada Job Bank postings that are OPEN NOW (still accepting applications), open to {who}, IT and non-IT, freshers and "
+    return (f"PATTERN P1 + P7: make it a 'Top {min(len(jobs), 10)} jobs list' reel (her #1 format): hook with the "
+            f"number, read out 3-4 best roles with pay (CAD + LPA) and city, say the rest are in the sheet, "
+            f"comment keyword for the full list. "
+            f"Real Canada Job Bank postings that are OPEN NOW (still accepting applications), open to {who}, IT and non-IT, freshers and "
             f"experienced. Use ONLY these jobs and numbers; tell viewers to check the Job Bank link and apply only "
             f"on official sites, and warn that paying anyone for an LMIA is illegal:\n" + "\n".join(lines))
 
@@ -531,7 +555,7 @@ def stories_block(stories: list[dict[str, Any]]) -> str:
     out = ["ALL STORIES TODAY (score /10)"]
     for i, s in enumerate(stories, 1):
         yt = "; ".join(f"{v['channel']} {v['views']:,} views" for v in s.get("yt", [])[:2])
-        out.append(f"  {i}. [{s.get('score')}/10] [{s.get('category')}] {s.get('headline')}\n"
+        out.append(f"  {i}. [{s.get('score')}/10] [{s.get('pattern', 'none')}] [{s.get('category')}] {s.get('headline')}\n"
                    f"     {s.get('what_happened', '')}\n     Why it matters: {s.get('why_it_matters', '')}\n"
                    f"     Outlets: {', '.join(s.get('outlets', [])[:6]) or '-'}" + (f" | YouTube: {yt}" if yt else "")
                    + "".join(f"\n     {u}" for u in s.get("links", [])[:2]))
@@ -570,7 +594,7 @@ def main() -> None:
     jobs_india, jobs_canada = safe(collect_jobs, default=([], [])) or ([], [])
 
     top = stories[0] if stories else None  # best story of any kind (company hiring counts too)
-    topic1 = f"{top['headline']}. {top.get('what_happened', '')}" if top else None
+    topic1 = (f"PATTERN {top.get('pattern', 'none')}: {top['headline']}. {top.get('what_happened', '')}") if top else None
     def ctx(st: dict[str, Any]) -> str:
         return ("Headlines covering this story:\n" + "\n".join(st.get("refs", [])) + "\n"
                 + "\n".join(f"YouTube: {v['title']} - {v['description']}" for v in st.get("yt", [])[:2]))
