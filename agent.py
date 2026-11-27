@@ -845,10 +845,20 @@ def doc_section(n: int, label: str, s: dict[str, str] | None, ref_links: list[st
 
 
 def prepend_doc(creds, block: str) -> None:
-    docs = build("docs", "v1", credentials=creds)
-    docs.documents().batchUpdate(documentId=GOOGLE_DOC_ID,
-                                 body={"requests": [{"insertText": {"location": {"index": 1}, "text": block}}]}).execute()
-    log("[DOC] Scripts added on top.")
+    """Wipe the WHOLE Doc first, check it is empty, then write only today's scripts
+    (old days stay in the Sheet's History tab)."""
+    docs = build("docs", "v1", credentials=creds).documents()
+    end = docs.get(documentId=GOOGLE_DOC_ID).execute()["body"]["content"][-1]["endIndex"]
+    if end > 2:
+        docs.batchUpdate(documentId=GOOGLE_DOC_ID, body={"requests": [
+            {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}}]}).execute()
+    left = docs.get(documentId=GOOGLE_DOC_ID).execute()["body"]["content"][-1]["endIndex"]
+    if left > 2:
+        raise RuntimeError(f"Doc not empty after clearing (endIndex {left}); not writing so nothing gets mixed")
+    log("[DOC] whole Doc cleared")
+    docs.batchUpdate(documentId=GOOGLE_DOC_ID, body={"requests": [
+        {"insertText": {"location": {"index": 1}, "text": block}}]}).execute()
+    log("[DOC] today's scripts written")
 
 
 def send_email(lines: list[str]) -> None:
