@@ -446,6 +446,119 @@ def collect_jobs() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
 
 
 # =============================================================================
+# 4b. ONE COMPANY HIRING FOR IT ROLES (official career-site APIs)
+# =============================================================================
+IT_WORDS = re.compile(r"(?i)engineer|developer|software|data|cloud|devops|\bqa\b|test|analyst|security|\bsre\b|"
+                      r"machine learning|\bml\b|\bai\b|\bit\b|architect|programmer|full.?stack|backend|frontend|mobile")
+CA_CITIES = ("canada", "toronto", "vancouver", "montreal", "ottawa", "calgary", "waterloo", "edmonton", "burnaby",
+             "oakville", "mississauga", "halifax", "winnipeg", ", on", ", bc", ", ab", ", qc")
+GREENHOUSE = {"Geotab": "geotab", "Faire": "faire", "Hootsuite": "hootsuite"}
+ASHBY = {"Wealthsimple": "wealthsimple", "1Password": "1password"}
+COMPANY_DAYS = int(os.getenv("COMPANY_DAYS") or 14)
+
+
+def _recent(dt: datetime | None) -> bool:
+    return dt is not None and (NOW_UTC - dt) <= timedelta(days=COMPANY_DAYS)
+
+
+def _is_canada(loc: str) -> bool:
+    low = f" {loc.lower()}"
+    return any(c in low for c in CA_CITIES)
+
+
+def amazon_jobs(country: str, extra: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    params = {"normalized_country_code[]": country, "category[]": "software-development",
+              "result_limit": "50", "sort": "recent", **(extra or {})}
+    data = requests.get("https://www.amazon.jobs/en/search.json", params=params, headers=UA, timeout=25).json()
+    out = []
+    for j in data.get("jobs", []):
+        try:
+            dt = datetime.strptime(re.sub(r"\s+", " ", j["posted_date"]), "%B %d, %Y").replace(tzinfo=timezone.utc)
+        except Exception:
+            dt = None
+        if _recent(dt):
+            out.append({"role": j["title"], "location": j["location"], "posted": dt.strftime("%d %b"),
+                        "link": "https://www.amazon.jobs" + j["job_path"],
+                        "quals": re.sub(r"<[^>]+>", " ", j.get("basic_qualifications", ""))[:300]})
+    return out
+
+
+def greenhouse_jobs(slug: str) -> list[dict[str, Any]]:
+    data = requests.get(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs", headers=UA, timeout=25).json()
+    out = []
+    for j in data.get("jobs", []):
+        loc = (j.get("location") or {}).get("name", "")
+        dt = datetime.fromisoformat(j["updated_at"]) if j.get("updated_at") else None
+        if _is_canada(loc) and IT_WORDS.search(j.get("title", "")) and _recent(dt):
+            out.append({"role": j["title"], "location": loc, "posted": dt.strftime("%d %b"), "link": j["absolute_url"]})
+    return out
+
+
+def ashby_jobs(slug: str) -> list[dict[str, Any]]:
+    data = requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}", headers=UA, timeout=25).json()
+    out = []
+    for j in data.get("jobs", []):
+        loc = j.get("location", "") + " " + str((j.get("address") or {}).get("postalAddress", {}).get("addressCountry", ""))
+        dt = datetime.fromisoformat(j["publishedAt"]) if j.get("publishedAt") else None
+        if _is_canada(loc) and IT_WORDS.search(j.get("title", "")) and _recent(dt):
+            out.append({"role": j["title"], "location": j.get("location", ""), "posted": dt.strftime("%d %b"),
+                        "link": j["jobUrl"], "remote": j.get("isRemote")})
+    return out
+
+
+def company_spotlight() -> dict[str, Any] | None:
+    """Pick ONE company hiring for IT roles in Canada today (official career sites). Companies with 3+ fresh
+    Canada IT roles rotate day by day, so the same company is not repeated every day."""
+    found: list[dict[str, Any]] = []
+    try:
+        ca = amazon_jobs("CAN")
+        india = amazon_jobs("IND", {"base_query": "SDE I"}) + amazon_jobs("IND", {"base_query": "university graduate"})
+        if ca:
+            found.append({"company": "Amazon", "canada": ca, "india": india[:6],
+                          "careers": "https://www.amazon.jobs/en/search?country=CAN"})
+    except Exception as exc:
+        log(f"[COMPANY WARN] Amazon: {exc}")
+    for name, slug in GREENHOUSE.items():
+        try:
+            jobs = greenhouse_jobs(slug)
+            if jobs:
+                found.append({"company": name, "canada": jobs, "india": [],
+                              "careers": f"https://job-boards.greenhouse.io/{slug}"})
+        except Exception as exc:
+            log(f"[COMPANY WARN] {name}: {exc}")
+    for name, slug in ASHBY.items():
+        try:
+            jobs = ashby_jobs(slug)
+            if jobs:
+                found.append({"company": name, "canada": jobs, "india": [], "careers": f"https://jobs.ashbyhq.com/{slug}"})
+        except Exception as exc:
+            log(f"[COMPANY WARN] {name}: {exc}")
+    for c in found:
+        log(f"[COMPANY] {c['company']}: {len(c['canada'])} Canada IT roles, {len(c['india'])} India roles "
+            f"(last {COMPANY_DAYS} days)")
+    strong = sorted([c for c in found if len(c["canada"]) >= 3], key=lambda c: c["company"])
+    pool = strong or sorted(found, key=lambda c: -len(c["canada"]))[:1]
+    if not pool:
+        return None
+    pick = pool[NOW_IST.timetuple().tm_yday % len(pool)]
+    log(f"[COMPANY] spotlight today: {pick['company']}")
+    return pick
+
+
+def company_topic(c: dict[str, Any]) -> str:
+    ca = "\n".join(f"- {j['role']} | {j['location']} | posted {j['posted']} | {j['link']}" for j in c["canada"][:12])
+    ind = "\n".join(f"- {j['role']} | {j['location']} | posted {j['posted']} | {j['link']}" for j in c["india"][:6])
+    return (f"PATTERN P2 (her 123K-view format): {c['company']} is hiring for IT roles in Canada"
+            + (" + India" if ind else "") + f". {len(c['canada'])} Canada IT roles posted in the last "
+            f"{COMPANY_DAYS} days on the official careers site ({c['careers']}).\n"
+            f"Say the company name in the hook. Read out the 4-5 main role names and the cities. Canada roles need a "
+            f"valid work permit / PGWP / PR (no sponsorship promised). Do not invent pay: give a pay range only if it "
+            f"is listed below." + (" India part: freshers / SDE I roles listed below." if ind else
+                                   " No India roles today: say the Canada roles need Canada work authorization.")
+            + f"\nCANADA ROLES (official):\n{ca}" + (f"\nINDIA ROLES (official):\n{ind}" if ind else ""))
+
+
+# =============================================================================
 # 5. SCRIPTS
 # =============================================================================
 STYLE = """STYLE = the kranthi.in.canada reel format (learned from her last 20 reels, 2026-11-27).
@@ -562,10 +675,14 @@ def stories_block(stories: list[dict[str, Any]]) -> str:
     return "\n".join(out) + "\n\n"
 
 
-def prepend_doc(creds, text: str) -> None:
-    build("docs", "v1", credentials=creds).documents().batchUpdate(
-        documentId=CANADA_DOC_ID, body={"requests": [{"insertText": {"location": {"index": 1}, "text": text}}]}).execute()
-    log("[DOC] added on top")
+def write_doc(creds, text: str) -> None:
+    """Clears the old scripts, then writes today's (the Doc only ever shows today)."""
+    docs = build("docs", "v1", credentials=creds).documents()
+    end = docs.get(documentId=CANADA_DOC_ID).execute()["body"]["content"][-1]["endIndex"]
+    reqs = [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}}] if end > 2 else []
+    reqs.append({"insertText": {"location": {"index": 1}, "text": text}})
+    docs.batchUpdate(documentId=CANADA_DOC_ID, body={"requests": reqs}).execute()
+    log("[DOC] old scripts cleared, today's written")
 
 
 def send_email(lines: list[str]) -> None:
@@ -602,14 +719,19 @@ def main() -> None:
     s1 = write_script("Top immigration / overseas news", topic1, ctx(top)) if topic1 else None
     links1 = top.get("refs", []) if top else []
 
-    # Script 2: jobs open to Indians from India -> else jobs for PGWP/PR/work-permit holders -> else 2nd story
-    if jobs_india:
+    # Script 2: ONE company hiring for IT roles (official careers site) -> else Job Bank jobs list -> else 2nd story
+    spot = safe(company_spotlight, default=None)
+    if spot:
+        label2 = f"{spot['company']} is hiring - IT roles in Canada" + (" + India" if spot["india"] else "")
+        s2 = write_script("jobs", company_topic(spot))
+        links2 = [spot["careers"]] + [j["link"] for j in spot["canada"][:5]]
+    elif jobs_india:
         label2, s2, links2 = "Canada jobs open to Indians (apply from India, LMIA / no permit needed)", write_script("jobs", jobs_topic(jobs_india, "india")), []
     elif jobs_canada:
         label2, s2, links2 = "Canada jobs for PGWP / PR / work-permit holders", write_script("jobs", jobs_topic(jobs_canada, "canada")), []
     else:
-        nxt = next((s for s in stories if s is not top), None)
-        label2 = "2nd biggest story (no open jobs found today)"
+        nxt = next((x for x in stories if x is not top), None)
+        label2 = "2nd biggest story"
         s2 = write_script("news", f"{nxt['headline']}. {nxt.get('what_happened', '')}", ctx(nxt)) if nxt else None
         links2 = nxt.get("refs", []) if nxt else []
 
@@ -618,13 +740,17 @@ def main() -> None:
             "==================================================\n\n"
             + script_block(1, "Top story (hiring / immigration / overseas Indians)", s1, links1)
             + script_block(2, label2, s2, links2)
+            + (f"{spot['company'].upper()} - ALL CANADA IT ROLES (official)\n"
+               + "".join(f"  • {x['role']} | {x['location']} | posted {x['posted']}\n    {x['link']}\n" for x in spot["canada"])
+               + "".join(f"  • [INDIA] {x['role']} | {x['location']} | posted {x['posted']}\n    {x['link']}\n" for x in spot["india"])
+               + "\n" if spot else "")
             + jobs_block("JOBS OPEN TO INDIANS FROM INDIA", jobs_india)
             + jobs_block("JOBS FOR PEOPLE IN CANADA (PGWP / PR / WORK PERMIT)", jobs_canada)
             + stories_block(stories) + "\n")
-    safe(prepend_doc, google_creds(), text)
+    safe(write_doc, google_creds(), text)
     safe(send_email, [f"<b>Script 1:</b> {(s1 or {}).get('title', 'nothing strong today')}",
                       f"<b>Script 2 ({label2}):</b> {(s2 or {}).get('title', 'nothing strong today')}",
-                      f"Jobs found: {len(jobs_india)} for Indians in India, {len(jobs_canada)} for PGWP/PR/work-permit holders. "
+                      f"IT company today: {spot['company'] if spot else '-'}. Jobs found: {len(jobs_india)} for Indians in India, {len(jobs_canada)} for PGWP/PR/work-permit holders. "
                       f"Stories tracked: {len(stories)}."])
     log("[DONE]")
 
