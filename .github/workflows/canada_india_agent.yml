@@ -1,0 +1,72 @@
+name: Canada-India Daily Agent (2 scripts by ~6 PM IST)
+run-name: ${{ (github.event_name == 'schedule' || inputs.daily == 'true') && 'Daily run' || 'Manual test' }}
+
+# GitHub's schedule can be late, so it fires at 17:30 IST with two backups.
+# Every "Daily run" exits in seconds if a Daily run already succeeded today (IST).
+# Optional: a cron-job.org job can call "Run workflow" at 17:50 IST with daily=true.
+on:
+  schedule:
+    - cron: "0 12 * * *"    # 17:30 IST main
+    - cron: "30 13 * * *"   # 19:00 IST backup
+    - cron: "30 15 * * *"   # 21:00 IST last backup
+  workflow_dispatch:
+    inputs:
+      daily:
+        description: "true = counts as today's daily run"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: canada-india-agent
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Skip if today's run already succeeded
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.daily }}" != "true" ]; then
+            echo "Manual test run"; echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
+          DONE=$(gh api "repos/${{ github.repository }}/actions/workflows/canada_india_agent.yml/runs?status=success&per_page=30" \
+            --jq "[.workflow_runs[] | select(.display_title == \"Daily run\" and .id != ${{ github.run_id }}) | select((.created_at | fromdateiso8601 + 19800 | strftime(\"%Y-%m-%d\")) == \"$TODAY\")] | length")
+          echo "Successful daily runs today (IST $TODAY): $DONE"
+          if [ "$DONE" -gt 0 ]; then echo "run=false" >> "$GITHUB_OUTPUT"; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.run == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.guard.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Run Canada-India agent
+        if: steps.guard.outputs.run == 'true'
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          CANADA_RECIPIENT_EMAIL: ${{ vars.CANADA_RECIPIENT_EMAIL }}
+          CANADA_DOC_ID: ${{ vars.CANADA_DOC_ID }}
+          CANADA_HOURS: ${{ vars.CANADA_HOURS }}
+          GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
+        run: python canada_agent.py
