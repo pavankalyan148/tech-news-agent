@@ -19,6 +19,7 @@ OUTPUT: Google Doc (newest day on top: 2 scripts, then every story + job with li
 a Gmail summary. Uses the same secrets as the tech-news agent, plus CANADA_DOC_ID.
 """
 
+import html
 import json
 import os
 import re
@@ -366,6 +367,24 @@ def jobbank_details(job: dict[str, Any]) -> None:
     m = re.search(r"Experience:?\s+(.{3,45}?)(?=\s+(?:Employment|On site|On the road|Work|Hybrid|Remote|Education|Tasks|Screening|Location)|\.)", t)
     exp = m.group(1).strip() if m else ""
     job["experience"] = exp
+    m = re.search(r"(\d+)\s+vacanc", t)
+    job["vacancies"] = int(m.group(1)) if m else 1
+    m = re.search(r"Education:\s*(.{3,80}?)(?:\.|\s+(?:Experience|Work setting|Tasks|Certificates|Screening))", t)
+    job["education"] = m.group(1).strip() if m else ""
+    m = re.search(r"Certificates, licences, memberships, and courses\s*:\s*(.{3,250}?)\.?\s+(?:Experience:|Employment|Work setting|Tasks|Screening|Health benefits|Location)", t)
+    if not m:
+        m = re.search(r"Credentials Certificates, licences, memberships, and courses\s+(.{3,200}?)\s+(?:Additional information|"
+                      r"Experience and specialization|Personal suitability|Who can apply|Work conditions|Security and safety|"
+                      r"Transportation|Health benefits|Financial benefits|Other benefits)", t)
+    job["credentials"] = m.group(1).strip() if m else ""
+    job["housing"] = "on-site housing" in low
+    m = re.search(r"([\d.]+)\s+hours per week", t)
+    job["hours"] = float(m.group(1)) if m else 40.0
+    job["employer_is_person"] = not re.search(
+        r"(?i)\b(inc|ltd|lt[ée]e|corp|corporation|limited|llc|llp|co|company|group|services|health|lodge|restaurant|"
+        r"hotel|authority|centre|center|school|farms?|foods?|transport|logistics|express|motors|clinic|care|homes?|"
+        r"society|association|church|university|college|bakery|cafe|systems|solutions|technologies|enterprises|"
+        r"industries|construction|manor|villa|residence|hospital|pharmacy|market|store)\b", job.get("company", ""))
     job["level"] = ("Fresher" if re.search(r"(?i)will train|no experience|less than 7 months|experience an asset", exp)
                     else "Experienced" if exp else "")
     if job["open_to_abroad"] or job["lmia"]:
@@ -488,18 +507,20 @@ def amazon_jobs(country: str, extra: dict[str, str] | None = None) -> list[dict[
         if _recent(dt):
             out.append({"role": j["title"], "location": j["location"], "posted": dt.strftime("%d %b"),
                         "link": "https://www.amazon.jobs" + j["job_path"],
-                        "quals": re.sub(r"<[^>]+>", " ", j.get("basic_qualifications", ""))[:300]})
+                        "text": _plain(" ".join(j.get(k, "") or "" for k in (
+                            "description", "basic_qualifications", "preferred_qualifications")))})
     return out
 
 
 def greenhouse_jobs(slug: str) -> list[dict[str, Any]]:
-    data = requests.get(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs", headers=UA, timeout=25).json()
+    data = requests.get(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true", headers=UA, timeout=40).json()
     out = []
     for j in data.get("jobs", []):
         loc = (j.get("location") or {}).get("name", "")
         dt = datetime.fromisoformat(j["updated_at"]) if j.get("updated_at") else None
         if _is_canada(loc) and IT_WORDS.search(j.get("title", "")) and _recent(dt):
-            out.append({"role": j["title"], "location": loc, "posted": dt.strftime("%d %b"), "link": j["absolute_url"]})
+            out.append({"role": j["title"], "location": loc, "posted": dt.strftime("%d %b"), "link": j["absolute_url"],
+                        "text": _plain(html.unescape(j.get("content", "")))})
     return out
 
 
@@ -510,7 +531,11 @@ def lever_jobs(slug: str) -> list[dict[str, Any]]:
         loc = (j.get("categories") or {}).get("location", "") or ""
         dt = datetime.fromtimestamp(j["createdAt"] / 1000, tz=timezone.utc) if j.get("createdAt") else None
         if _is_canada(loc) and IT_WORDS.search(j.get("text", "")) and _recent(dt):
-            out.append({"role": j["text"], "location": loc, "posted": dt.strftime("%d %b"), "link": j["hostedUrl"]})
+            sal = j.get("salaryRange") or {}
+            pay = f" ${sal.get('min'):,} - ${sal.get('max'):,} {sal.get('currency', '')}" if sal.get("min") else ""
+            out.append({"role": j["text"], "location": loc, "posted": dt.strftime("%d %b"), "link": j["hostedUrl"],
+                        "text": _plain(j.get("descriptionPlain", "") + " " + " ".join(
+                            x.get("content", "") for x in j.get("lists", [])) + " " + j.get("additionalPlain", "")) + pay})
     return out
 
 
@@ -527,15 +552,101 @@ def save_used(used: list[dict[str, str]]) -> None:
 
 
 def ashby_jobs(slug: str) -> list[dict[str, Any]]:
-    data = requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}", headers=UA, timeout=25).json()
+    data = requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true",
+                        headers=UA, timeout=40).json()
     out = []
     for j in data.get("jobs", []):
         loc = j.get("location", "") + " " + str((j.get("address") or {}).get("postalAddress", {}).get("addressCountry", ""))
         dt = datetime.fromisoformat(j["publishedAt"]) if j.get("publishedAt") else None
         if _is_canada(loc) and IT_WORDS.search(j.get("title", "")) and _recent(dt):
+            comp = (j.get("compensation") or {}).get("compensationTierSummary", "") or ""
             out.append({"role": j["title"], "location": j.get("location", ""), "posted": dt.strftime("%d %b"),
-                        "link": j["jobUrl"], "remote": j.get("isRemote")})
+                        "link": j["jobUrl"], "remote": j.get("isRemote"), "workplace": j.get("workplaceType", ""),
+                        "text": _plain(j.get("descriptionPlain", "")) + " " + comp})
     return out
+
+
+def _plain(x: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", x or ""))).strip()
+
+
+_RATE: list[float] = []
+
+
+def cad_inr() -> float:
+    """Live CAD -> INR rate (free API), fallback 61."""
+    if not _RATE:
+        try:
+            _RATE.append(float(requests.get("https://open.er-api.com/v6/latest/CAD", timeout=15).json()["rates"]["INR"]))
+        except Exception:
+            _RATE.append(float(os.getenv("CAD_INR") or 61))
+        log(f"[RATE] 1 CAD = {_RATE[0]:.2f} INR")
+    return _RATE[0]
+
+
+def lpa(cad_per_year: float) -> str:
+    lakhs = cad_per_year * cad_inr() / 100000
+    return f"{lakhs / 100:.1f} Crore" if lakhs >= 100 else f"{round(lakhs)} LPA"
+
+
+PAY_RE = re.compile(r"(?:CA)?\$\s?([\d,]{5,9})(?:\.\d+)?\s*(?:-|–|—|to)\s*(?:CA)?\$?\s?([\d,]{5,9})(?:\.\d+)?\s*(CAD|USD)?", re.I)
+SPONSOR_NO = re.compile(r"(?i)(not|unable to|cannot|can't|won't|will not|do not|does not)\s+(be\s+able\s+to\s+)?"
+                        r"(provide|offer|support|sponsor)\w*\s+(visa|immigration|work permit|sponsorship)"
+                        r"|sponsorship\s+(is\s+)?not\s+(available|offered|provided)|no\s+(visa\s+)?sponsorship"
+                        r"|not\s+eligible\s+for\s+(visa\s+)?sponsorship|must\s+(already\s+)?(be\s+)?(legally\s+)?"
+                        r"(authorized|eligible)\s+to\s+work\s+in\s+canada")
+SPONSOR_YES = re.compile(r"(?i)(visa|immigration|relocation)\s+(sponsorship|support)\s+(is\s+)?(available|provided|offered)"
+                         r"|(we|will)\s+(can\s+)?sponsor|sponsorship\s+available")
+JUNIOR_RE = re.compile(r"(?i:new grad|graduate|intern\b|junior|entry.level|early career|engineer 1\b)|\bI\b|\bL4\b")
+SENIOR_RE = re.compile(r"(?i)senior|\bsr\.?\b|staff|principal|lead|director|manager|head|architect|\bIII\b")
+
+
+def company_facts(c: dict[str, Any]) -> dict[str, Any]:
+    """Verified numbers straight from the official postings (no guessing)."""
+    jobs = c["canada"]
+    lows, highs, named = [], [], []
+    hybrid = remote = onsite = 0
+    no_sp = yes_sp = junior = senior = 0
+    cities: dict[str, int] = {}
+    for j in jobs:
+        t = j.get("text", "")
+        pays = [(int(a.replace(",", "")), int(b.replace(",", "")), (cur or "").upper()) for a, b, cur in PAY_RE.findall(t)]
+        pays = [x for x in pays if x[2] in ("CAD", "") and 30000 <= x[0] <= x[1] <= 600000]
+        if pays:
+            lows.append(pays[0][0]); highs.append(pays[0][1])
+            named.append(f"{j['role']}: ${pays[0][0]:,} - ${pays[0][1]:,} CAD")
+        low = t.lower() + " " + str(j.get("workplace", "")).lower()
+        if j.get("remote") or re.search(r"\bremote\b", low):
+            remote += 1
+        if "hybrid" in low:
+            hybrid += 1
+        elif not re.search(r"\bremote\b", low):
+            onsite += 1
+        no_sp += bool(SPONSOR_NO.search(t)); yes_sp += bool(SPONSOR_YES.search(t))
+        junior += bool(JUNIOR_RE.search(j["role"])) and not SENIOR_RE.search(j["role"])
+        senior += bool(SENIOR_RE.search(j["role"]))
+        for city in re.findall(r"(Toronto|Vancouver|Montreal|Ottawa|Calgary|Waterloo|Edmonton|Burnaby|Mississauga|"
+                               r"Halifax|Winnipeg|Kitchener|Oakville|Markham|Victoria|Quebec)", j["location"], re.I):
+            cities[city.title()] = cities.get(city.title(), 0) + 1
+    if yes_sp and not no_sp:
+        sponsor = f"{yes_sp} postings SAY visa sponsorship/support is available"
+    elif no_sp:
+        sponsor = (f"{no_sp} of {len(jobs)} postings say NO sponsorship / must already be authorized to work in Canada"
+                   + (f"; {yes_sp} mention sponsorship support" if yes_sp else ""))
+    else:
+        sponsor = "NOT MENTIONED in any posting (do not claim yes or no)"
+    lo, hi = (min(lows), max(highs)) if lows else (None, None)
+    return {
+        "count": len(jobs), "cities": sorted(cities.items(), key=lambda x: -x[1]),
+        "pay_cad": f"${lo:,} - ${hi:,} CAD per year" if lo else "NOT LISTED (do not mention pay)",
+        "pay_lpa": f"almost {lpa(lo)} nunchi {lpa(hi)}" if lo else "",
+        "pay_examples": named[:8],
+        "work_mode": f"{hybrid} hybrid, {remote} mention remote, {onsite} on-site/not stated (of {len(jobs)})",
+        "sponsorship": sponsor,
+        "seniority": (f"{senior} senior/staff/lead, {junior} junior/entry/new-grad, "
+                      f"{len(jobs) - senior - junior} mid-level"),
+        "freshers_ok": junior > 0,
+    }
 
 
 def company_spotlight() -> dict[str, Any] | None:
@@ -575,16 +686,64 @@ def company_spotlight() -> dict[str, Any] | None:
 
 
 def company_topic(c: dict[str, Any]) -> str:
-    ca = "\n".join(f"- {j['role']} | {j['location']} | posted {j['posted']} | {j['link']}" for j in c["canada"][:12])
+    f = company_facts(c)
+    c["facts"] = f
+    roles = "\n".join(f"- {j['role']} | {j['location']} | posted {j['posted']}" for j in c["canada"][:15])
     ind = "\n".join(f"- {j['role']} | {j['location']} | posted {j['posted']} | {j['link']}" for j in c["india"][:6])
-    return (f"PATTERN P2 (her 123K-view format): {c['company']} is hiring for IT roles in Canada"
-            + (" + India" if ind else "") + f". {len(c['canada'])} Canada IT roles posted in the last "
-            f"{COMPANY_DAYS} days on the official careers site ({c['careers']}).\n"
-            f"Say the company name in the hook. Read out the 4-5 main role names and the cities. Canada roles need a "
-            f"valid work permit / PGWP / PR (no sponsorship promised). Do not invent pay: give a pay range only if it "
-            f"is listed below." + (" India part: freshers / SDE I roles listed below." if ind else
-                                   " No India roles today: say the Canada roles need Canada work authorization.")
-            + f"\nCANADA ROLES (official):\n{ca}" + (f"\nINDIA ROLES (official):\n{ind}" if ind else ""))
+    return (f"COMPANY: {c['company']} (official careers site: {c['careers']})\n"
+            f"VERIFIED FACTS FROM THE OFFICIAL POSTINGS (use exactly these, nothing else):\n"
+            f"- Canada IT / tech roles posted in the last {COMPANY_DAYS} days: {f['count']}\n"
+            f"- Cities: {', '.join(f'{k} ({v})' for k, v in f['cities']) or 'see postings'}\n"
+            f"- Pay range: {f['pay_cad']}" + (f" = {f['pay_lpa']} (1 CAD = Rs {cad_inr():.0f})" if f["pay_lpa"] else "") + "\n"
+            f"- Pay examples: {'; '.join(f['pay_examples']) or 'none listed'}\n"
+            f"- Work mode: {f['work_mode']}\n"
+            f"- Seniority: {f['seniority']}\n"
+            f"- Visa sponsorship: {f['sponsorship']}\n"
+            f"ROLES:\n{roles}" + (f"\nINDIA ROLES (official):\n{ind}" if ind else ""))
+
+
+def india_jobs_pick(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """3 Job Bank jobs open to applicants without a Canadian work permit: different roles, fresher-friendly first,
+    then higher pay."""
+    def hourly(j):
+        m = re.search(r"\$([\d,.]+)", j.get("salary", ""))
+        v = float(m.group(1).replace(",", "")) if m else 0
+        return v if "hour" in j.get("salary", "") else v / 2080 if "annual" in j.get("salary", "") else v
+    pool = sorted([j for j in jobs if j.get("open_to_abroad")] or jobs,
+                  key=lambda j: (j.get("level") != "Fresher", -hourly(j)))
+    # mix: best IT job first if any, then the rest (any job type)
+    it = [j for j in pool if j.get("it_or_non_it") == "IT"][:1]
+    pool = it + [j for j in pool if j not in it]
+    out, roles = [], set()
+    for j in pool:
+        key = j["role"].lower().split()[0]
+        if key in roles:
+            continue
+        roles.add(key)
+        out.append(j)
+        if len(out) == 3:
+            break
+    return out
+
+
+def india_jobs_topic(jobs: list[dict[str, Any]]) -> str:
+    lines = []
+    for n, j in enumerate(jobs, 1):
+        m = re.search(r"\$([\d,.]+)", j.get("salary", ""))
+        rate = float(m.group(1).replace(",", "")) if m else 0
+        yearly = rate * j.get("hours", 40) * 52 if "hour" in j.get("salary", "") else rate
+        who = (f"a private family (DO NOT say the person's name; say 'oka family')" if j.get("employer_is_person")
+               else j.get("company"))
+        lines.append(
+            f"{n}) {j['role']} | employer: {who} | city: {j.get('location')} | pay: {j.get('salary')}"
+            + (f" (full time ~${yearly:,.0f} CAD/year = {lpa(yearly)})" if yearly else "")
+            + f" | vacancies: {j.get('vacancies', 1)} | education: {j.get('education') or 'not listed'}"
+            + f" | certificates/licence: {j.get('credentials') or 'none listed'} | experience: {j.get('experience') or 'not listed'}"
+            + f" | freshers OK: {'YES' if j.get('level') == 'Fresher' else 'NO'}"
+            + (" | on-site housing: YES" if j.get("housing") else "")
+            + f" | LMIA: {j.get('lmia') or 'not stated'} | {j['link']}")
+    return ("VERIFIED Job Bank postings that accept applicants 'with or without a valid Canadian work permit' "
+            "(use exactly these facts):\n" + "\n".join(lines))
 
 
 # =============================================================================
@@ -613,6 +772,43 @@ HARD RULES: only facts you verified; exact dates/numbers; no made-up jobs, pay o
 She is not an agent: never promise a job or visa."""
 
 
+EXAMPLE_COMPANY = """Canada lo IT jobs kosam chustunnara? Okta massive ga hire chestundi!
+Official careers site lo Toronto lo 50+ tech & product roles post chesaru. Packages $114K nunchi $231K CAD varaku, ante almost 70 LPA nunchi 1.4 Crore!
+Mundu nannu follow ayyi 'OKTA' ani comment cheyandi, official apply link DM chestha!
+
+Roles enti ante: Senior Full-Stack Engineer, Senior Platform Engineer (Auth0), Senior Product Designer, Senior Product Manager (Auth0 AI), mariyu chala Senior Software Engineer openings!
+
+Anni Toronto, Ontario lo, mostly hybrid. Ivi experienced vallake, freshers ki kaadu.
+Important: Postings lo visa sponsorship gurinchi emi cheppaledu. So Canada lo already Work Permit, PGWP leda PR unna vallaki best chance. India nunchi ayithe, apply chese mundu posting lo work authorization rules check cheyandi.
+
+Gurthunchukondi, evaru dabbulu adigina ivvakandi, official Okta careers site lo matrame apply cheyandi.
+Canada lo IT jobs kosam chustunna mee friends ki share cheyandi, and follow @kranthi.in.canada for genuine Canada jobs!"""
+
+EXAMPLE_JOBS = """Canada lo Job kosam chustunara? Ayithe Good News!
+Canadian work permit lekunda, India nunchi direct apply cheyagalige jobs list ready chesanu!
+Mundu nannu follow ayyi "CANADA" ani comment cheyandi, official apply links DM chestha!
+
+1st) Ontario, Ancaster lo oka family Home Child Care Provider ni hire chesukuntunnaru, $21 per hour, stay kuda istharu! High school chalu, freshers kuda apply cheyochu.
+2nd) Groves Park Lodge lo 9 Personal Support Worker jobs, $29.35 per hour. PSW certificate, First Aid, CPR undali.
+3rd) Nova Scotia Health lo 20 Emergency Nurse jobs, $40.55 per hour, ante almost 50 LPA! Kani Canada RN licence, 1-2 years experience undali.
+
+Apply cheyadaniki mundu work permit avasaram ledu. Job offer vaste, employer LMIA tho work permit process chestaru.
+Gurthunchukondi, ee jobs kosam evaru dabbulu adigina ivvakandi. Official Job Bank site lo matrame apply cheyandi.
+Canada lo job kosam chustunna mee friends ki ee video share cheyandi, and follow @kranthi.in.canada for genuine Canada jobs!"""
+
+FACT_RULES = """FACT RULES (the user rejected scripts that broke these):
+- Pay: only the range in the facts. Rupees: use the LPA given in the facts (never compute your own).
+- Sponsorship: say exactly what the facts say. If "NOT MENTIONED", say "Postings lo visa sponsorship gurinchi
+  emi cheppaledu" - NEVER "sponsorship ivvatledu" or "India nunchi apply cheyalemu".
+- Work permit (Job Bank): NEVER just "work permit avasaram ledu". Say "Apply cheyadaniki mundu work permit
+  avasaram ledu. Job offer vaste, employer LMIA tho work permit process chestaru."
+- Freshers: say "freshers kuda apply cheyochu" ONLY where the facts say freshers OK: YES. Otherwise say the
+  requirement (licence / certificate / years of experience).
+- Work mode: say "mostly hybrid" / "remote" only as the counts show.
+- Private family employer: never say the person's name - say "oka family".
+- Add the strong extras when present: number of vacancies, on-site housing, licence needed."""
+
+
 def research(topic: str) -> str:
     prompt = f"""Today is {TODAY}. Research with Google Search and give verified facts on:
 {topic}
@@ -622,11 +818,20 @@ PGWP/PR holders, families), deadlines/eligibility, and 2-4 source URLs. Bullet p
     return safe(gemini, prompt, False, True, default="") or ""
 
 
-def write_script(label: str, topic: str, context: str = "") -> dict[str, Any]:
+def write_script(label: str, topic: str, context: str = "", example: str = "") -> dict[str, Any]:
     facts = (research(topic) if label != "jobs" else "") or context
+    ex = (f"""
+APPROVED EXAMPLE = FORMAT ONLY (the user wrote it): copy its structure, line order, tone and length.
+NEVER reuse its jobs, companies, cities or numbers - every job/company/number must come from TODAY'S facts above
+(any job type: IT, non-IT, healthcare, trades, warehouse, freshers or experienced).
+---
+{example}
+---
+{FACT_RULES}
+""" if example else "")
     prompt = f"""You write a 60-second reel script for Indians in / going to Canada and abroad.
 {STYLE}
-
+{ex}
 TOPIC ({label}):
 {topic}
 
@@ -745,36 +950,43 @@ def main() -> None:
     stories = safe(rank_stories, news, videos, default=[]) or []
     jobs_india, jobs_canada = safe(collect_jobs, default=([], [])) or ([], [])
 
-    top = stories[0] if stories else None  # best story of any kind (company hiring counts too)
-    topic1 = (f"PATTERN {top.get('pattern', 'none')}: {top['headline']}. {top.get('what_happened', '')}") if top else None
+    top = stories[0] if stories else None  # best story of any kind
+
     def ctx(st: dict[str, Any]) -> str:
         return ("Headlines covering this story:\n" + "\n".join(st.get("refs", [])) + "\n"
                 + "\n".join(f"YouTube: {v['title']} - {v['description']}" for v in st.get("yt", [])[:2]))
 
-    s1 = write_script("Top immigration / overseas news", topic1, ctx(top)) if topic1 else None
-    links1 = top.get("refs", []) if top else []
-
-    # Script 2: ONE company hiring for IT roles (official careers site) -> else Job Bank jobs list -> else 2nd story
+    # Script 1: ONE new company hiring for IT roles (user's Okta template)
     spot = safe(company_spotlight, default=None)
     if spot:
-        label2 = f"{spot['company']} is hiring - IT roles in Canada" + (" + India" if spot["india"] else "")
-        s2 = write_script("jobs", company_topic(spot))
-        links2 = [spot["careers"]] + [j["link"] for j in spot["canada"][:5]]
-    elif jobs_india:
-        label2, s2, links2 = "Canada jobs open to Indians (apply from India, LMIA / no permit needed)", write_script("jobs", jobs_topic(jobs_india, "india")), []
+        label1 = f"{spot['company']} is hiring - IT roles in Canada" + (" + India" if spot["india"] else "")
+        s1 = write_script("jobs", company_topic(spot), example=EXAMPLE_COMPANY)
+        links1 = [spot["careers"]] + [x["link"] for x in spot["canada"][:5]]
+    else:
+        label1, s1, links1 = "IT company spotlight", None, []
+
+    # Script 2: 3 Job Bank jobs Indians can apply for from India (user's 3-jobs template)
+    picks = india_jobs_pick(jobs_india)
+    if picks:
+        label2 = "Canada jobs - apply from India (no work permit needed to apply)"
+        s2 = write_script("jobs", india_jobs_topic(picks), example=EXAMPLE_JOBS)
+        links2 = [x["link"] for x in picks]
     elif jobs_canada:
         label2, s2, links2 = "Canada jobs for PGWP / PR / work-permit holders", write_script("jobs", jobs_topic(jobs_canada, "canada")), []
     else:
-        nxt = next((x for x in stories if x is not top), None)
-        label2 = "2nd biggest story"
-        s2 = write_script("news", f"{nxt['headline']}. {nxt.get('what_happened', '')}", ctx(nxt)) if nxt else None
-        links2 = nxt.get("refs", []) if nxt else []
+        label2, s2, links2 = "Jobs from India", None, []
+
+    # Script 3: the day's top immigration / overseas-Indians story
+    topic3 = (f"PATTERN {top.get('pattern', 'none')}: {top['headline']}. {top.get('what_happened', '')}") if top else None
+    s3 = write_script("Top immigration / overseas news", topic3, ctx(top)) if topic3 else None
+    links3 = top.get("refs", []) if top else []
 
     text = ("==================================================\n"
             f"CANADA-INDIA DAILY — {NOW_IST.strftime('%d %b %Y, %I:%M %p IST')}\n"
             "==================================================\n\n"
-            + script_block(1, "Top story (hiring / immigration / overseas Indians)", s1, links1)
+            + script_block(1, label1, s1, links1)
             + script_block(2, label2, s2, links2)
+            + script_block(3, "Top immigration / overseas-Indians story", s3, links3)
             + (f"{spot['company'].upper()} - ALL CANADA IT ROLES (official)\n"
                + "".join(f"  • {x['role']} | {x['location']} | posted {x['posted']}\n    {x['link']}\n" for x in spot["canada"])
                + "".join(f"  • [INDIA] {x['role']} | {x['location']} | posted {x['posted']}\n    {x['link']}\n" for x in spot["india"])
@@ -783,8 +995,9 @@ def main() -> None:
             + jobs_block("JOBS FOR PEOPLE IN CANADA (PGWP / PR / WORK PERMIT)", jobs_canada)
             + stories_block(stories) + "\n")
     safe(write_doc, google_creds(), text)
-    safe(send_email, [f"<b>Script 1:</b> {(s1 or {}).get('title', 'nothing strong today')}",
+    safe(send_email, [f"<b>Script 1 ({label1}):</b> {(s1 or {}).get('title', 'nothing strong today')}",
                       f"<b>Script 2 ({label2}):</b> {(s2 or {}).get('title', 'nothing strong today')}",
+                      f"<b>Script 3 (news):</b> {(s3 or {}).get('title', 'nothing strong today')}",
                       f"IT company today: {spot['company'] if spot else '-'}. Jobs found: {len(jobs_india)} for Indians in India, {len(jobs_canada)} for PGWP/PR/work-permit holders. "
                       f"Stories tracked: {len(stories)}."])
     log("[DONE]")
