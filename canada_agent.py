@@ -7,10 +7,9 @@ Every day it collects the last 24 h of:
      permits, PR, work permits, visas) and any MAJOR news that affects Indians living
      overseas (US / UK / Gulf / Australia visas, deportations, safety, remittances...).
   2. YouTube videos on these topics (YouTube Data API), ranked by views per hour.
-  3. Canada JOBS open to Indians: freshers + experienced, IT + non-IT, ideally with
-     visa sponsorship / LMIA / hiring from India. If nothing is open to people in India,
-     it also looks for jobs open to people ALREADY in Canada on a PGWP, PR or work permit.
-     Only real, currently open postings with a link (Gemini + Google Search).
+  3. Canada JOBS from Job Bank (official RSS): LMIA / open-to-abroad postings for Indians in India,
+     and postings open to people already in Canada on a PGWP, PR or work permit. IT + non-IT,
+     freshers first. Each posting page is checked for "who can apply" and LMIA status.
 
 Then it writes 2 scripts (Telugu in English letters):
   Script 1 = the biggest immigration / Canada-India / overseas-Indians story of the day.
@@ -137,7 +136,7 @@ MODELS = discover_models()
 
 def gemini(prompt: str, want_json: bool = True, search: bool = False) -> Any:
     last: Exception | None = None
-    for model in MODELS:
+    for model in (MODELS[:3] if search else MODELS):
         for attempt in range(2):
             try:
                 cfg: dict[str, Any] = {}
@@ -156,6 +155,8 @@ def gemini(prompt: str, want_json: bool = True, search: bool = False) -> Any:
             except Exception as exc:
                 last = exc
                 log(f"[GEMINI WARN] {model} try {attempt + 1}: {str(exc)[:160]}")
+                if any(c in str(exc) for c in ("429", "404", "RESOURCE_EXHAUSTED", "NOT_FOUND")):
+                    break  # quota / missing model: go to the next model at once
                 time.sleep(4)
     raise RuntimeError(f"All Gemini models failed: {last}")
 
@@ -277,6 +278,9 @@ Return JSON list, best first, max 8:
     by_id = {x["id"]: x for x in news + videos}
     for s in stories:
         s["links"] = [by_id[i]["url"] for i in s.get("news_ids", []) + s.get("yt_ids", []) if i in by_id][:6]
+        s["refs"] = ([f"{by_id[i]['outlet']}: {by_id[i]['title']}" for i in s.get("news_ids", []) if i in by_id][:5]
+                     + [f"YouTube ({by_id[i]['channel']}, {by_id[i]['views']:,} views): {by_id[i]['url']}"
+                        for i in s.get("yt_ids", []) if i in by_id][:3])
         s["outlets"] = sorted({by_id[i]["outlet"] for i in s.get("news_ids", []) if i in by_id})
         s["yt"] = [by_id[i] for i in s.get("yt_ids", []) if i in by_id]
     stories.sort(key=lambda s: float(s.get("score", 0)), reverse=True)
@@ -285,36 +289,113 @@ Return JSON list, best first, max 8:
 
 
 # =============================================================================
-# 4. JOBS (Gemini + Google Search, real open postings only)
+# 4. JOBS (Job Bank Canada official RSS + each posting page; real postings only)
 # =============================================================================
-def find_jobs(scope: str) -> list[dict[str, Any]]:
-    if scope == "india":
-        who = ("people who are IN INDIA right now (Indian citizens). Prefer postings that say visa sponsorship, "
-               "LMIA approved, international applicants welcome, or a company hiring in India for Canada roles. "
-               "Also include Canadian companies hiring in India (remote / India office) that Indian freshers can apply to.")
-    else:
-        who = ("people ALREADY IN CANADA with a PGWP, open work permit or PR (no sponsorship needed). Include "
-               "roles that say 'open work permit / PGWP holders welcome', new-grad / entry-level programs, and "
-               "big hiring drives (job fairs, bulk hiring).")
-    prompt = f"""Today is {TODAY}. Use Google Search to find Canada jobs that are OPEN RIGHT NOW (posted or still
-open in the last 7 days) for {who}
-Cover BOTH IT (software, data, cloud, QA, support) and NON-IT (healthcare, trucking, trades, warehouse,
-retail, hospitality, teaching, finance, admin), BOTH freshers and experienced.
-Only real postings from official career pages, Job Bank (jobbank.gc.ca), LinkedIn, Indeed, or official
-news of a hiring drive. Never invent a job. Every job needs a working link.
+JOB_SEARCHES = [  # (search words, IT or Non-IT)
+    ("software developer", "IT"), ("programmer", "IT"), ("data analyst", "IT"), ("web developer", "IT"),
+    ("IT support", "IT"), ("QA tester", "IT"), ("cloud engineer", "IT"), ("database", "IT"),
+    ("truck driver", "Non-IT"), ("cook", "Non-IT"), ("food service supervisor", "Non-IT"),
+    ("home child care", "Non-IT"), ("personal support worker", "Non-IT"), ("registered nurse", "Non-IT"),
+    ("welder", "Non-IT"), ("electrician", "Non-IT"), ("carpenter", "Non-IT"), ("warehouse", "Non-IT"),
+    ("retail supervisor", "Non-IT"), ("accounting", "Non-IT"), ("administrative assistant", "Non-IT"),
+    ("farm worker", "Non-IT"), ("construction", "Non-IT"), ("customer service", "Non-IT"),
+]
+UA = {"User-Agent": "Mozilla/5.0 (compatible; daily-jobs-digest)"}
 
-Return ONLY a JSON list (max 10), no other text:
-[{{"company": "", "role": "", "location": "", "it_or_non_it": "IT|Non-IT", "level": "Fresher|Experienced|Both",
-"who_can_apply": "e.g. visa sponsorship / PGWP holders / PR only", "salary": "if listed, else ''",
-"last_date": "if listed, else ''", "link": "https://..."}}]"""
-    try:
-        jobs = gemini(prompt, search=True)
-        jobs = [j for j in jobs if isinstance(j, dict) and str(j.get("link", "")).startswith("http")]
-        log(f"[JOBS:{scope}] {len(jobs)} jobs")
-        return jobs
-    except Exception as exc:
-        log(f"[JOBS WARN] {scope}: {exc}")
-        return []
+
+def jobbank_feed(words: str, kind: str) -> list[dict[str, Any]]:
+    q = requests.utils.quote(words)
+    url = f"https://www.jobbank.gc.ca/jobsearch/feed/jobSearchRSSfeed?searchstring={q}&fage=2&sort=D"
+    out = []
+    for e in feedparser.parse(requests.get(url, headers=UA, timeout=20).content).entries[:12]:
+        summ = re.sub(r"<[^>]+>", " | ", e.get("summary", ""))
+
+        def field(k: str) -> str:
+            m = re.search(k + r":\s*\|?\s*([^|]+)", summ)
+            return m.group(1).strip() if m else ""
+
+        out.append({"role": e.get("title", "").strip(), "link": e.get("link", ""), "it_or_non_it": kind,
+                    "location": field("Location"), "company": field("Employer"), "salary": field("Salary")})
+    return out
+
+
+def jobbank_details(job: dict[str, Any]) -> None:
+    raw = requests.get(job["link"], headers=UA, timeout=20).text
+    raw = re.sub(r"(?is)<script.*?</script>|<style.*?</style>", " ", raw)  # the JS holds both LMIA texts
+    t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw))
+    low = t.lower()
+    job["lmia"] = ("approved" if "has an approved labour market impact assessment" in low
+                   else "requested" if "applied for a labour market impact assessment" in low else "")
+    job["open_to_abroad"] = "with or without a valid canadian work permit" in low
+    external = 'id="externaljoblink"' in raw.lower() and "who can apply for this job" not in low
+    job["work_permit_ok"] = ("temporary resident of canada with a valid work permit" in low or job["open_to_abroad"]
+                             or external)  # external postings: anyone allowed to work in Canada
+    m = re.search(r"Experience:?\s+(.{3,45}?)(?=\s+(?:Employment|On site|On the road|Work|Hybrid|Remote|Education|Tasks|Screening|Location)|\.)", t)
+    exp = m.group(1).strip() if m else ""
+    job["experience"] = exp
+    job["level"] = ("Fresher" if re.search(r"(?i)will train|no experience|less than 7 months|experience an asset", exp)
+                    else "Experienced" if exp else "")
+    if job["open_to_abroad"] or job["lmia"]:
+        parts = []
+        if job["open_to_abroad"]:
+            parts.append("Anyone (no Canadian work permit needed)")
+        if job["lmia"]:
+            parts.append(f"LMIA {job['lmia']} (employer can hire foreign workers)")
+        job["who_can_apply"] = "; ".join(parts)
+    elif external:
+        job["who_can_apply"] = "Anyone allowed to work in Canada (PGWP / work permit / PR); check the posting"
+    elif job["work_permit_ok"]:
+        job["who_can_apply"] = "Citizens, PR and work-permit holders (PGWP / open work permit)"
+    else:
+        job["who_can_apply"] = "Citizens / PR only"
+
+
+def collect_jobs() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Returns (jobs open to Indians in India, jobs for PGWP / PR / work-permit holders)."""
+    seen: set[str] = set()
+    pool: list[dict[str, Any]] = []
+    for words, kind in JOB_SEARCHES:
+        try:
+            for j in jobbank_feed(words, kind):
+                key = f"{j['company']}|{j['role']}|{j['location']}".lower()
+                if j["link"] and key not in seen:
+                    seen.add(key)
+                    pool.append(j)
+        except Exception as exc:
+            log(f"[JOBS WARN] feed {words}: {exc}")
+    log(f"[JOBS] {len(pool)} fresh Job Bank postings (last 2 days)")
+    per_role: dict[str, int] = {}
+    checked = []
+    for j in pool:  # check each posting page (capped: polite and fast)
+        key = j["role"].lower()
+        if per_role.get(key, 0) >= 3 or len(checked) >= 120:
+            continue
+        try:
+            jobbank_details(j)
+            checked.append(j)
+            per_role[key] = per_role.get(key, 0) + 1
+            time.sleep(0.3)
+        except Exception as exc:
+            log(f"[JOBS WARN] {j['link']}: {exc}")
+    abroad = [j for j in checked if j["open_to_abroad"] or j["lmia"]]
+    in_canada = [j for j in checked if j["work_permit_ok"] and j not in abroad]
+
+    def pick(jobs: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+        def fresh_first(lst):
+            return sorted(lst, key=lambda j: j.get("level") != "Fresher")
+        a = fresh_first([j for j in jobs if j["it_or_non_it"] == "IT"])
+        b = fresh_first([j for j in jobs if j["it_or_non_it"] != "IT"])
+        out = []
+        while len(out) < n and (a or b):  # mix IT and non-IT
+            if a:
+                out.append(a.pop(0))
+            if b and len(out) < n:
+                out.append(b.pop(0))
+        return out
+
+    abroad, in_canada = pick(abroad, 10), pick(in_canada, 10)
+    log(f"[JOBS] open to Indians abroad (LMIA / no permit needed): {len(abroad)} | PGWP/PR/work permit: {len(in_canada)}")
+    return abroad, in_canada
 
 
 # =============================================================================
@@ -340,8 +421,8 @@ PGWP/PR holders, families), deadlines/eligibility, and 2-4 source URLs. Bullet p
     return safe(gemini, prompt, False, True, default="") or ""
 
 
-def write_script(label: str, topic: str) -> dict[str, Any]:
-    facts = research(topic)
+def write_script(label: str, topic: str, context: str = "") -> dict[str, Any]:
+    facts = (research(topic) if label != "jobs" else "") or context
     prompt = f"""You write a 60-second reel script for Indians in / going to Canada and abroad.
 {STYLE}
 
@@ -349,7 +430,7 @@ TOPIC ({label}):
 {topic}
 
 VERIFIED RESEARCH:
-{facts or "(research unavailable: use only the facts in the topic)"}
+{facts or "(no extra research: use ONLY the facts in the topic, add no numbers or dates of your own)"}
 
 Return JSON: {{"title": "punchy title under 80 chars", "script": "the script",
 "key_facts": ["fact 1", "fact 2"], "fact_sources": ["URLs"]}}"""
@@ -364,8 +445,10 @@ Return JSON: {{"title": "punchy title under 80 chars", "script": "the script",
 def jobs_topic(jobs: list[dict[str, Any]], scope: str) -> str:
     who = "Indians applying from India" if scope == "india" else "people already in Canada on PGWP / work permit / PR"
     lines = [f"- {j.get('company')}: {j.get('role')} ({j.get('location')}, {j.get('it_or_non_it')}, {j.get('level')}; "
-             f"{j.get('who_can_apply')}) {j.get('link')}" for j in jobs[:6]]
-    return f"Canada jobs open now for {who}, IT and non-IT, freshers and experienced:\n" + "\n".join(lines)
+             f"{j.get('who_can_apply')}; salary {j.get('salary') or 'n/a'}; experience {j.get('experience') or 'n/a'}) {j.get('link')}" for j in jobs[:6]]
+    return (f"Real Canada Job Bank postings from the last 2 days, open to {who}, IT and non-IT, freshers and "
+            f"experienced. Use ONLY these jobs and numbers; tell viewers to check the Job Bank link and apply only "
+            f"on official sites, and warn that paying anyone for an LMIA is illegal:\n" + "\n".join(lines))
 
 
 # =============================================================================
@@ -380,7 +463,8 @@ def script_block(n: int, label: str, s: dict[str, Any] | None, links: list[str])
     if not s:
         return f"SCRIPT {n} — {label}\nNothing strong enough today.\n\n"
     facts = "\n".join(f"  - {f}" for f in s.get("key_facts", []))
-    srcs = "\n".join(f"  - {u}" for u in (s.get("fact_sources", []) + links)[:8])
+    fs = [u for u in s.get("fact_sources", []) if "vertexaisearch" not in u and "news.google.com" not in u]
+    srcs = "\n".join(f"  - {u}" for u in (fs + links)[:8])
     return (f"SCRIPT {n} — {label}: {s.get('title', '')}  ({len(s.get('script', ''))} chars)\n"
             f"{s.get('script', '').strip()}\n\nKey facts:\n{facts}\nSources / references:\n{srcs}\n\n")
 
@@ -390,7 +474,7 @@ def jobs_block(title: str, jobs: list[dict[str, Any]]) -> str:
         return f"{title}\n  (none found today)\n\n"
     rows = [f"  • {j.get('company')} — {j.get('role')} | {j.get('location')} | {j.get('it_or_non_it')} | "
             f"{j.get('level')} | {j.get('who_can_apply')}"
-            + (f" | {j['salary']}" if j.get("salary") else "") + (f" | apply by {j['last_date']}" if j.get("last_date") else "")
+            + (f" | {j['salary']}" if j.get("salary") else "") + (f" | exp: {j['experience']}" if j.get("experience") else "")
             + f"\n    {j.get('link')}" for j in jobs]
     return f"{title}\n" + "\n".join(rows) + "\n\n"
 
@@ -404,7 +488,7 @@ def stories_block(stories: list[dict[str, Any]]) -> str:
         out.append(f"  {i}. [{s.get('score')}/10] [{s.get('category')}] {s.get('headline')}\n"
                    f"     {s.get('what_happened', '')}\n     Why it matters: {s.get('why_it_matters', '')}\n"
                    f"     Outlets: {', '.join(s.get('outlets', [])[:6]) or '-'}" + (f" | YouTube: {yt}" if yt else "")
-                   + "".join(f"\n     {u}" for u in s.get("links", [])[:4]))
+                   + "".join(f"\n     {u}" for u in s.get("links", [])[:2]))
     return "\n".join(out) + "\n\n"
 
 
@@ -437,14 +521,17 @@ def main() -> None:
     news = safe(collect_news, default=[]) or []
     videos = safe(collect_youtube, default=[]) or []
     stories = safe(rank_stories, news, videos, default=[]) or []
-    jobs_india = find_jobs("india")
-    jobs_canada = find_jobs("canada")
+    jobs_india, jobs_canada = safe(collect_jobs, default=([], [])) or ([], [])
 
     non_job = [s for s in stories if s.get("category") != "jobs"]
     top = non_job[0] if non_job else (stories[0] if stories else None)
     topic1 = f"{top['headline']}. {top.get('what_happened', '')}" if top else None
-    s1 = write_script("Top immigration / overseas news", topic1) if topic1 else None
-    links1 = top.get("links", []) if top else []
+    def ctx(st: dict[str, Any]) -> str:
+        return ("Headlines covering this story:\n" + "\n".join(st.get("refs", [])) + "\n"
+                + "\n".join(f"YouTube: {v['title']} - {v['description']}" for v in st.get("yt", [])[:2]))
+
+    s1 = write_script("Top immigration / overseas news", topic1, ctx(top)) if topic1 else None
+    links1 = top.get("refs", []) if top else []
 
     # Script 2: jobs open to Indians from India -> else jobs for PGWP/PR/work-permit holders -> else 2nd story
     if jobs_india:
@@ -454,8 +541,8 @@ def main() -> None:
     else:
         nxt = next((s for s in stories if s is not top), None)
         label2 = "2nd biggest story (no open jobs found today)"
-        s2 = write_script("news", f"{nxt['headline']}. {nxt.get('what_happened', '')}") if nxt else None
-        links2 = nxt.get("links", []) if nxt else []
+        s2 = write_script("news", f"{nxt['headline']}. {nxt.get('what_happened', '')}", ctx(nxt)) if nxt else None
+        links2 = nxt.get("refs", []) if nxt else []
 
     text = ("==================================================\n"
             f"CANADA-INDIA DAILY — {NOW_IST.strftime('%d %b %Y, %I:%M %p IST')}\n"
