@@ -452,8 +452,17 @@ IT_WORDS = re.compile(r"(?i)engineer|developer|software|data|cloud|devops|\bqa\b
                       r"machine learning|\bml\b|\bai\b|\bit\b|architect|programmer|full.?stack|backend|frontend|mobile")
 CA_CITIES = ("canada", "toronto", "vancouver", "montreal", "ottawa", "calgary", "waterloo", "edmonton", "burnaby",
              "oakville", "mississauga", "halifax", "winnipeg", ", on", ", bc", ", ab", ", qc")
-GREENHOUSE = {"Geotab": "geotab", "Faire": "faire", "Hootsuite": "hootsuite"}
-ASHBY = {"Wealthsimple": "wealthsimple", "1Password": "1password"}
+# Official job boards with Canada IT roles (checked 2026-11-27). Add more any time: "Name": "board-slug".
+GREENHOUSE = {"Okta": "okta", "Affirm": "affirm", "Lyft": "lyft", "Stripe": "stripe", "GitLab": "gitlab",
+              "Databricks": "databricks", "Samsara": "samsara", "Instacart": "instacart", "Robinhood": "robinhood",
+              "AlayaCare": "alayacare", "Brex": "brex", "Pinterest": "pinterest", "Geotab": "geotab", "Faire": "faire",
+              "D2L": "d2l", "Dropbox": "dropbox", "Reddit": "reddit", "Coinbase": "coinbase", "Hootsuite": "hootsuite"}
+ASHBY = {"1Password": "1password", "Cohere": "cohere", "Wealthsimple": "wealthsimple", "Hopper": "hopper",
+         "Jobber": "jobber", "Benevity": "benevity", "Trulioo": "trulioo", "Snowflake": "snowflake",
+         "OpenAI": "openai", "Float": "float"}
+LEVER = {"Fullscript": "fullscript"}
+# Companies already done (by us or by her reels). The agent adds each day's pick and never repeats one.
+USED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "canada_used_companies.json")
 COMPANY_DAYS = int(os.getenv("COMPANY_DAYS") or 14)
 
 
@@ -494,6 +503,29 @@ def greenhouse_jobs(slug: str) -> list[dict[str, Any]]:
     return out
 
 
+def lever_jobs(slug: str) -> list[dict[str, Any]]:
+    data = requests.get(f"https://api.lever.co/v0/postings/{slug}?mode=json", headers=UA, timeout=25).json()
+    out = []
+    for j in data if isinstance(data, list) else []:
+        loc = (j.get("categories") or {}).get("location", "") or ""
+        dt = datetime.fromtimestamp(j["createdAt"] / 1000, tz=timezone.utc) if j.get("createdAt") else None
+        if _is_canada(loc) and IT_WORDS.search(j.get("text", "")) and _recent(dt):
+            out.append({"role": j["text"], "location": loc, "posted": dt.strftime("%d %b"), "link": j["hostedUrl"]})
+    return out
+
+
+def load_used() -> list[dict[str, str]]:
+    try:
+        return json.load(open(USED_FILE, encoding="utf-8")).get("used", [])
+    except Exception:
+        return []
+
+
+def save_used(used: list[dict[str, str]]) -> None:
+    with open(USED_FILE, "w", encoding="utf-8") as f:
+        json.dump({"used": used}, f, indent=1, ensure_ascii=False)
+
+
 def ashby_jobs(slug: str) -> list[dict[str, Any]]:
     data = requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}", headers=UA, timeout=25).json()
     out = []
@@ -507,41 +539,38 @@ def ashby_jobs(slug: str) -> list[dict[str, Any]]:
 
 
 def company_spotlight() -> dict[str, Any] | None:
-    """Pick ONE company hiring for IT roles in Canada today (official career sites). Companies with 3+ fresh
-    Canada IT roles rotate day by day, so the same company is not repeated every day."""
+    """Pick ONE NEW company hiring for IT roles in Canada today (official career sites). A company that was
+    already done (canada_used_companies.json) is never picked again; the busiest new company wins."""
+    used = load_used()
+    done = {u["company"].lower() for u in used}
+    log(f"[COMPANY] already done: {', '.join(sorted(done)) or '-'}")
+    sources = ([("Amazon", "amazon", "")] + [(n, "gh", sl) for n, sl in GREENHOUSE.items()]
+               + [(n, "ab", sl) for n, sl in ASHBY.items()] + [(n, "lv", sl) for n, sl in LEVER.items()])
+    careers = {"gh": "https://job-boards.greenhouse.io/{}", "ab": "https://jobs.ashbyhq.com/{}",
+               "lv": "https://jobs.lever.co/{}", "amazon": "https://www.amazon.jobs/en/search?country=CAN"}
     found: list[dict[str, Any]] = []
-    try:
-        ca = amazon_jobs("CAN")
-        india = amazon_jobs("IND", {"base_query": "SDE I"}) + amazon_jobs("IND", {"base_query": "university graduate"})
-        if ca:
-            found.append({"company": "Amazon", "canada": ca, "india": india[:6],
-                          "careers": "https://www.amazon.jobs/en/search?country=CAN"})
-    except Exception as exc:
-        log(f"[COMPANY WARN] Amazon: {exc}")
-    for name, slug in GREENHOUSE.items():
+    for name, kind, slug in sources:
+        if name.lower() in done:
+            continue
         try:
-            jobs = greenhouse_jobs(slug)
+            india: list[dict[str, Any]] = []
+            if kind == "amazon":
+                jobs = amazon_jobs("CAN")
+                india = amazon_jobs("IND", {"base_query": "SDE I"})
+            else:
+                jobs = {"gh": greenhouse_jobs, "ab": ashby_jobs, "lv": lever_jobs}[kind](slug)
             if jobs:
-                found.append({"company": name, "canada": jobs, "india": [],
-                              "careers": f"https://job-boards.greenhouse.io/{slug}"})
+                found.append({"company": name, "canada": jobs, "india": india[:6], "careers": careers[kind].format(slug)})
+                log(f"[COMPANY] {name}: {len(jobs)} Canada IT roles (last {COMPANY_DAYS} days)")
         except Exception as exc:
             log(f"[COMPANY WARN] {name}: {exc}")
-    for name, slug in ASHBY.items():
-        try:
-            jobs = ashby_jobs(slug)
-            if jobs:
-                found.append({"company": name, "canada": jobs, "india": [], "careers": f"https://jobs.ashbyhq.com/{slug}"})
-        except Exception as exc:
-            log(f"[COMPANY WARN] {name}: {exc}")
-    for c in found:
-        log(f"[COMPANY] {c['company']}: {len(c['canada'])} Canada IT roles, {len(c['india'])} India roles "
-            f"(last {COMPANY_DAYS} days)")
-    strong = sorted([c for c in found if len(c["canada"]) >= 3], key=lambda c: c["company"])
-    pool = strong or sorted(found, key=lambda c: -len(c["canada"]))[:1]
-    if not pool:
+    if not found:
+        log("[COMPANY] no new company with fresh Canada IT roles today")
         return None
-    pick = pool[NOW_IST.timetuple().tm_yday % len(pool)]
-    log(f"[COMPANY] spotlight today: {pick['company']}")
+    pick = max(found, key=lambda c: len(c["canada"]))
+    used.append({"company": pick["company"], "date": NOW_IST.strftime("%Y-%m-%d")})
+    save_used(used)
+    log(f"[COMPANY] spotlight today: {pick['company']} (saved so it is not repeated)")
     return pick
 
 
@@ -676,13 +705,19 @@ def stories_block(stories: list[dict[str, Any]]) -> str:
 
 
 def write_doc(creds, text: str) -> None:
-    """Clears the old scripts, then writes today's (the Doc only ever shows today)."""
+    """Step 1: wipe the WHOLE Doc and check it is empty. Step 2: write today's scripts. Nothing old is kept."""
     docs = build("docs", "v1", credentials=creds).documents()
     end = docs.get(documentId=CANADA_DOC_ID).execute()["body"]["content"][-1]["endIndex"]
-    reqs = [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}}] if end > 2 else []
-    reqs.append({"insertText": {"location": {"index": 1}, "text": text}})
-    docs.batchUpdate(documentId=CANADA_DOC_ID, body={"requests": reqs}).execute()
-    log("[DOC] old scripts cleared, today's written")
+    if end > 2:
+        docs.batchUpdate(documentId=CANADA_DOC_ID, body={"requests": [
+            {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}}]}).execute()
+    left = docs.get(documentId=CANADA_DOC_ID).execute()["body"]["content"][-1]["endIndex"]
+    if left > 2:
+        raise RuntimeError(f"Doc not empty after clearing (endIndex {left}); not writing so nothing gets mixed")
+    log("[DOC] whole Doc cleared")
+    docs.batchUpdate(documentId=CANADA_DOC_ID, body={"requests": [
+        {"insertText": {"location": {"index": 1}, "text": text}}]}).execute()
+    log("[DOC] today's scripts written")
 
 
 def send_email(lines: list[str]) -> None:

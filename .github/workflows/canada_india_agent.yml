@@ -17,7 +17,7 @@ on:
         default: "false"
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 concurrency:
@@ -70,3 +70,11 @@ jobs:
           CANADA_HOURS: ${{ vars.CANADA_HOURS }}
           GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
         run: python canada_agent.py
+
+      - name: Save used-company history (so no company repeats)
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          git config user.name "canada-agent-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add canada_used_companies.json
+          git diff --cached --quiet || (git commit -m "Canada agent: used company $(TZ=Asia/Kolkata date +%Y-%m-%d)" && git pull --rebase -q && git push -q)
