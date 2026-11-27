@@ -68,6 +68,11 @@ NEWS_QUERIES = [
     "UK visa OR Australia visa Indians",
     "Indians in Gulf OR UAE visa rules",
     "deported Indians OR Indian diaspora",
+    "hiring in Canada 2026 OR \"is hiring\" Canada",
+    "mass hiring freshers OR \"off campus drive\" 2026",
+    "Canada job fair OR \"international recruitment\" Canada",
+    "Canada nurses LMIA OR healthcare workers Canada recruitment",
+    "Canada new PR pathway OR provincial nominee draw",
 ]
 # region = (hl, gl, ceid)  India + Canada editions so both sides of the story are covered
 NEWS_REGIONS = [("en-IN", "IN", "IN:en"), ("en-CA", "CA", "CA:en")]
@@ -83,6 +88,8 @@ YT_QUERIES = [
     "PGWP Canada update",
     "Canada India news",
     "Canada telugu",
+    "Canada jobs telugu",
+    "companies hiring in Canada",
 ]
 
 
@@ -261,7 +268,10 @@ permit rules, Express Entry or PNP draws, Canada jobs/hiring, OR major news that
 overseas (any country: visa rules, deportations, safety, taxes, remittances, students). Drop everything else.
 
 Score each story:
-- impact (0-4): how many Indians abroad / wanting to go abroad it changes things for, and how much
+- impact (0-4): how many Indians abroad / wanting to go abroad it changes things for, and how much.
+  Give the top marks to what wins on the kranthi.in.canada page: a big company hiring in Canada (+ India
+  freshers), mass / any-graduate hiring, top-N companies hiring, healthcare recruitment with LMIA, new PR
+  pathways / big PR news, job fairs.
 - buzz (0-3): number of outlets + YouTube views per hour
 - fresh (0-2): newer = higher
 - clarity (0-1): can be explained in a 60 s reel
@@ -303,9 +313,9 @@ JOB_SEARCHES = [  # (search words, IT or Non-IT)
 UA = {"User-Agent": "Mozilla/5.0 (compatible; daily-jobs-digest)"}
 
 
-def jobbank_feed(words: str, kind: str) -> list[dict[str, Any]]:
+def jobbank_feed(words: str, kind: str, days: int = 2) -> list[dict[str, Any]]:
     q = requests.utils.quote(words)
-    url = f"https://www.jobbank.gc.ca/jobsearch/feed/jobSearchRSSfeed?searchstring={q}&fage=2&sort=D"
+    url = f"https://www.jobbank.gc.ca/jobsearch/feed/jobSearchRSSfeed?searchstring={q}&fage={days}&sort=D"
     out = []
     for e in feedparser.parse(requests.get(url, headers=UA, timeout=20).content).entries[:12]:
         summ = re.sub(r"<[^>]+>", " | ", e.get("summary", ""))
@@ -350,20 +360,22 @@ def jobbank_details(job: dict[str, Any]) -> None:
         job["who_can_apply"] = "Citizens / PR only"
 
 
-def collect_jobs() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def collect_jobs_window(days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Returns (jobs open to Indians in India, jobs for PGWP / PR / work-permit holders)."""
     seen: set[str] = set()
     pool: list[dict[str, Any]] = []
     for words, kind in JOB_SEARCHES:
         try:
-            for j in jobbank_feed(words, kind):
+            for j in jobbank_feed(words, kind, days):
                 key = f"{j['company']}|{j['role']}|{j['location']}".lower()
                 if j["link"] and key not in seen:
                     seen.add(key)
                     pool.append(j)
         except Exception as exc:
             log(f"[JOBS WARN] feed {words}: {exc}")
-    log(f"[JOBS] {len(pool)} fresh Job Bank postings (last 2 days)")
+    log(f"[JOBS] {len(pool)} Job Bank postings (posted in the last {days} days, still open)")
+    for j in pool:
+        j["posted_window"] = f"posted in last {days} days"
     per_role: dict[str, int] = {}
     checked = []
     for j in pool:  # check each posting page (capped: polite and fast)
@@ -394,22 +406,48 @@ def collect_jobs() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         return out
 
     abroad, in_canada = pick(abroad, 10), pick(in_canada, 10)
-    log(f"[JOBS] open to Indians abroad (LMIA / no permit needed): {len(abroad)} | PGWP/PR/work permit: {len(in_canada)}")
+    log(f"[JOBS] {days}d: open to Indians abroad (LMIA / no permit needed): {len(abroad)} | PGWP/PR/work permit: {len(in_canada)}")
+    return abroad, in_canada
+
+
+def collect_jobs() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Newest first (2 days). Too few? Widen to postings from the last 14 days: Job Bank only lists
+    postings that are still open, so these can still be applied to today and after."""
+    abroad, in_canada = collect_jobs_window(2)
+    if len(abroad) < 4 or len(in_canada) < 4:
+        more_abroad, more_canada = collect_jobs_window(14)
+        have = {j["link"] for j in abroad + in_canada}
+        abroad += [j for j in more_abroad if j["link"] not in have][:10 - len(abroad)]
+        in_canada += [j for j in more_canada if j["link"] not in have][:10 - len(in_canada)]
     return abroad, in_canada
 
 
 # =============================================================================
 # 5. SCRIPTS
 # =============================================================================
-STYLE = """STYLE (Telugu written in English letters, like a top Canada-immigration Instagram reel):
-- Line 1 = a hook that stops the scroll (the big change / number / opportunity), under 12 words.
-- Then: "Ikkada asalu important point enti ante..." -> what exactly happened (dates, numbers, who it is for).
-- "Simple ga cheppali ante..." -> what it means for an Indian student / worker / PGWP / PR holder.
-- "Kani jagrtha ga vinandi" -> the catch, deadline or eligibility rule.
-- End with one comment question + "follow avvandi, daily Canada updates kosam".
-- 1,000-1,300 characters. Short lines. English words for official terms (PGWP, PR, Express Entry, LMIA).
-HARD RULES: only facts you verified; give exact dates/numbers; no made-up jobs or rules; never say
-"ee video lo" or name the YouTuber we got the idea from. Official sources (canada.ca / IRCC) beat media."""
+STYLE = """STYLE = the kranthi.in.canada reel format (learned from her last 20 reels, 2026-11-27).
+Language: Telugu in English letters mixed with simple English (Tenglish), talking to the viewer
+("meeru", "chustunara?"), friendly and fast. Job/official words stay in English.
+STRUCTURE (spoken script, 35-60 s, 600-1,000 characters, short punchy lines):
+1. HOOK (first line): "Canada lo <jobs / PR / X> kosam chustunara? Ayithe Good News!" OR
+   "<Company> is hiring in Canada + India!" OR a big number ("Amazon Canada lo 9,000 Jobs! $24/hour!").
+2. WHAT: company / program + the headline fact (how many jobs, which roles, which cities, the date).
+3. CANADA PART: roles, locations, pay in CAD AND in rupees (e.g. "$103k CAD ante almost 63 LPA"),
+   eligibility in plain words ("Canada lo Work Permit / PR / PGWP unte YES").
+4. INDIA PART (if any): what people in India can do (freshers / any graduate / 2024-2026 batches,
+   LMIA / sponsorship, process: screening + assessment + interview). If it is NOT open from India,
+   say it straight ("India nunchi direct apply kudaradu").
+5. IMPORTANT / catch: who is NOT eligible, deadline, "competition high", and the scam line
+   ("Evaru dabbulu adigina ivvakandi - official site lo matrame apply cheyandi").
+6. CTA: 'Link kavala? Comment "<ONE KEYWORD IN CAPS>" - nenu official link DM chestha!'
+   then "Share with friends" + "Follow @kranthi.in.canada for genuine Canada jobs!"
+TOPICS SHE WINS WITH (most views first): Top-N companies hiring lists, a big company hiring in Canada +
+India together (Cognizant, Concentrix, Amazon, Infosys, Deloitte, Spotify), freshers / any-graduate mass
+hiring, healthcare international recruitment with LMIA, PR news (new PR pathways, draws, budget), career
+pathways (e.g. pharmacist India -> Canada), job-search hacks (Job Bank LMIA filter), job fairs.
+HARD RULES: only facts you verified; exact dates/numbers; no made-up jobs, pay or rules; never say
+"ee video lo" or name another creator. Official sources (canada.ca / IRCC / company careers page) beat media.
+She is not an agent: never promise a job or visa."""
 
 
 def research(topic: str) -> str:
@@ -432,7 +470,12 @@ TOPIC ({label}):
 VERIFIED RESEARCH:
 {facts or "(no extra research: use ONLY the facts in the topic, add no numbers or dates of your own)"}
 
-Return JSON: {{"title": "punchy title under 80 chars", "script": "the script",
+Return JSON: {{"title": "topic title like her captions' first line, under 80 chars",
+"script": "the spoken script", "comment_keyword": "ONE WORD",
+"caption": "Instagram caption in her style: hook line, emoji ticks for the facts, eligibility, the
+Comment-keyword line, Share + Follow @kranthi.in.canada, a one-line Disclaimer (Nenu agent ni kaadu, info
+from official sites, no fee), then 5-7 hashtags incl. #CanadaJobs #KranthiInCanada",
+"official_links_to_dm": ["official URLs people get in DM"],
 "key_facts": ["fact 1", "fact 2"], "fact_sources": ["URLs"]}}"""
     try:
         out = gemini(prompt)
@@ -446,7 +489,7 @@ def jobs_topic(jobs: list[dict[str, Any]], scope: str) -> str:
     who = "Indians applying from India" if scope == "india" else "people already in Canada on PGWP / work permit / PR"
     lines = [f"- {j.get('company')}: {j.get('role')} ({j.get('location')}, {j.get('it_or_non_it')}, {j.get('level')}; "
              f"{j.get('who_can_apply')}; salary {j.get('salary') or 'n/a'}; experience {j.get('experience') or 'n/a'}) {j.get('link')}" for j in jobs[:6]]
-    return (f"Real Canada Job Bank postings from the last 2 days, open to {who}, IT and non-IT, freshers and "
+    return (f"Real Canada Job Bank postings that are OPEN NOW (still accepting applications), open to {who}, IT and non-IT, freshers and "
             f"experienced. Use ONLY these jobs and numbers; tell viewers to check the Job Bank link and apply only "
             f"on official sites, and warn that paying anyone for an LMIA is illegal:\n" + "\n".join(lines))
 
@@ -465,8 +508,11 @@ def script_block(n: int, label: str, s: dict[str, Any] | None, links: list[str])
     facts = "\n".join(f"  - {f}" for f in s.get("key_facts", []))
     fs = [u for u in s.get("fact_sources", []) if "vertexaisearch" not in u and "news.google.com" not in u]
     srcs = "\n".join(f"  - {u}" for u in (fs + links)[:8])
-    return (f"SCRIPT {n} — {label}: {s.get('title', '')}  ({len(s.get('script', ''))} chars)\n"
-            f"{s.get('script', '').strip()}\n\nKey facts:\n{facts}\nSources / references:\n{srcs}\n\n")
+    dm = "\n".join(f"  - {u}" for u in s.get("official_links_to_dm", []))
+    return (f"SCRIPT {n} — {label}\nTOPIC: {s.get('title', '')}  ({len(s.get('script', ''))} chars)\n"
+            f"Comment keyword: {s.get('comment_keyword', '')}\n\n"
+            f"{s.get('script', '').strip()}\n\nCAPTION:\n{s.get('caption', '').strip()}\n\n"
+            f"Links to DM:\n{dm or '  (use the sources below)'}\nKey facts:\n{facts}\nSources / references:\n{srcs}\n\n")
 
 
 def jobs_block(title: str, jobs: list[dict[str, Any]]) -> str:
@@ -523,8 +569,7 @@ def main() -> None:
     stories = safe(rank_stories, news, videos, default=[]) or []
     jobs_india, jobs_canada = safe(collect_jobs, default=([], [])) or ([], [])
 
-    non_job = [s for s in stories if s.get("category") != "jobs"]
-    top = non_job[0] if non_job else (stories[0] if stories else None)
+    top = stories[0] if stories else None  # best story of any kind (company hiring counts too)
     topic1 = f"{top['headline']}. {top.get('what_happened', '')}" if top else None
     def ctx(st: dict[str, Any]) -> str:
         return ("Headlines covering this story:\n" + "\n".join(st.get("refs", [])) + "\n"
@@ -535,7 +580,7 @@ def main() -> None:
 
     # Script 2: jobs open to Indians from India -> else jobs for PGWP/PR/work-permit holders -> else 2nd story
     if jobs_india:
-        label2, s2, links2 = "Canada jobs for Indians (apply from India)", write_script("jobs", jobs_topic(jobs_india, "india")), []
+        label2, s2, links2 = "Canada jobs open to Indians (apply from India, LMIA / no permit needed)", write_script("jobs", jobs_topic(jobs_india, "india")), []
     elif jobs_canada:
         label2, s2, links2 = "Canada jobs for PGWP / PR / work-permit holders", write_script("jobs", jobs_topic(jobs_canada, "canada")), []
     else:
@@ -547,7 +592,7 @@ def main() -> None:
     text = ("==================================================\n"
             f"CANADA-INDIA DAILY — {NOW_IST.strftime('%d %b %Y, %I:%M %p IST')}\n"
             "==================================================\n\n"
-            + script_block(1, "Top immigration / overseas news", s1, links1)
+            + script_block(1, "Top story (hiring / immigration / overseas Indians)", s1, links1)
             + script_block(2, label2, s2, links2)
             + jobs_block("JOBS OPEN TO INDIANS FROM INDIA", jobs_india)
             + jobs_block("JOBS FOR PEOPLE IN CANADA (PGWP / PR / WORK PERMIT)", jobs_canada)
