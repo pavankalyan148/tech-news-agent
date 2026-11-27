@@ -772,17 +772,17 @@ HARD RULES: only facts you verified; exact dates/numbers; no made-up jobs, pay o
 She is not an agent: never promise a job or visa."""
 
 
-EXAMPLE_COMPANY = """Canada lo IT jobs kosam chustunnara? Okta massive ga hire chestundi!
-Official careers site lo Toronto lo 50+ tech & product roles post chesaru. Packages $114K nunchi $231K CAD varaku, ante almost 70 LPA nunchi 1.4 Crore!
-Mundu nannu follow ayyi 'OKTA' ani comment cheyandi, official apply link DM chestha!
-
-Roles enti ante: Senior Full-Stack Engineer, Senior Platform Engineer (Auth0), Senior Product Designer, Senior Product Manager (Auth0 AI), mariyu chala Senior Software Engineer openings!
-
-Anni Toronto, Ontario lo, mostly hybrid. Ivi experienced vallake, freshers ki kaadu.
-Important: Postings lo visa sponsorship gurinchi emi cheppaledu. So Canada lo already Work Permit, PGWP leda PR unna vallaki best chance. India nunchi ayithe, apply chese mundu posting lo work authorization rules check cheyandi.
-
-Gurthunchukondi, evaru dabbulu adigina ivvakandi, official Okta careers site lo matrame apply cheyandi.
-Canada lo IT jobs kosam chustunna mee friends ki share cheyandi, and follow @kranthi.in.canada for genuine Canada jobs!"""
+EXAMPLE_COMPANY = """Canada lo IT jobs kosam chustunnara? Okta massive ga hire chestundi! Official careers site lo Toronto lo 40-50+ tech & product roles active ga unnai. Packages $114K nunchi $231K CAD varaku - ante almost 74 LPA nunchi 1.5 Crore! Mundu nannu follow ayyi 'OKTA' ani comment cheyandi - official apply link mee DM ki pampistanu!
+Roles enti ante:
+* Senior Full-Stack Engineer
+* Senior Platform Engineer (Auth0)
+* Senior Product Designer
+* Senior Product Manager (Auth0 AI)
+* Mariyu chala Senior Software Engineer openings!
+Ee roles anni Toronto, Ontario lo hybrid leda on-site lo unnai. Ivi experienced professionals kosam - freshers ki kaadu.
+Important: Postings lo visa sponsorship gurinchi emi cheppaledu. So Canada lo already valid Work Permit, PGWP, leda PR unna vallaki best chance! India nunchi apply cheyalanukunte, mundu posting lo unna work authorization rules okasari check chesukondi.
+Gurthunchukondi, ee jobs kosam evaru dabbulu adigina okka rupayi kuda ivvakandi - official Okta careers site lo matrame free ga apply cheyandi!
+Canada lo IT jobs kosam chustunna mee friends ki ee video share cheyandi, and genuine Canada jobs kosam @kranthi.in.canada ni follow avvandi!"""
 
 EXAMPLE_JOBS = """Canada lo Job kosam chustunara? Ayithe Good News!
 Canadian work permit lekunda, India nunchi direct apply cheyagalige jobs list ready chesanu!
