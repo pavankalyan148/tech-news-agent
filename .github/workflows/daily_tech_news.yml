@@ -42,7 +42,13 @@ jobs:
             echo "Manual test run"; echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
-          DONE=$(gh api "repos/${{ github.repository }}/actions/workflows/daily_tech_news.yml/runs?status=success&per_page=30"             --jq "[.workflow_runs[] | select(.display_title == \"Daily run\" and .id != ${{ github.run_id }}) | select((.created_at | fromdateiso8601 + 19800 | strftime(\"%Y-%m-%d\")) == \"$TODAY\")] | length")
+          HOUR=$(TZ=Asia/Kolkata date +%-H)
+          # GitHub crons can fire 10-15 h late (e.g. 2 AM IST). Only run between 08:00 and 17:59 IST.
+          if [ "$HOUR" -lt 8 ] || [ "$HOUR" -ge 18 ]; then
+            echo "Outside the 08:00-18:00 IST window (hour $HOUR), skipping late trigger"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Count only today's successful Daily runs that started inside the window
+          DONE=$(gh api "repos/${{ github.repository }}/actions/workflows/daily_tech_news.yml/runs?status=success&per_page=30"             --jq "[.workflow_runs[] | select(.display_title == \"Daily run\" and .id != ${{ github.run_id }}) | select((.created_at | fromdateiso8601 + 19800 | strftime(\"%Y-%m-%d\")) == \"$TODAY\") | select((.created_at | fromdateiso8601 + 19800 | strftime(\"%H\") | tonumber) >= 8 and (.created_at | fromdateiso8601 + 19800 | strftime(\"%H\") | tonumber) < 18)] | length")
           echo "Successful daily runs today (IST $TODAY): $DONE"
           if [ "$DONE" -gt 0 ]; then echo "run=false" >> "$GITHUB_OUTPUT"; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
 
