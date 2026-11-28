@@ -94,8 +94,8 @@ WAIT_MINUTES = env_int("WAIT_MINUTES", 75)            # gap between 1st and 2nd 
 IG_MIN_LIKES = env_int("IG_MIN_LIKES", 100_000)        # viral in 24 h
 IG_FAST_LIKES_PER_HOUR = env_int("IG_FAST_LIKES_PER_HOUR", 4_000)  # or "fast likes"
 IG_MIN_GAIN = env_int("IG_MIN_GAIN", 5_000)            # likes gained during the wait
-IG_RESULTS_PER_HASHTAG = env_int("IG_RESULTS_PER_HASHTAG", 10)
-IG_RESULTS_PER_HANDLE = env_int("IG_RESULTS_PER_HANDLE", 2)
+IG_RESULTS_PER_HASHTAG = env_int("IG_RESULTS_PER_HASHTAG", 6)
+IG_RESULTS_PER_HANDLE = env_int("IG_RESULTS_PER_HANDLE", 1)
 IG_MAX_TRACKED = env_int("IG_MAX_TRACKED", 8)          # reels re-checked after the wait
 # Apify free plan ~ $0.0026 per result. 90/day ~ $7/month (under the $9 free credit).
 APIFY_MAX_RESULTS_PER_DAY = env_int("APIFY_MAX_RESULTS_PER_DAY", 90)
@@ -123,7 +123,8 @@ Dhairyam pages (Telugu audience, India first):
 - Defence & geopolitics: Indian armed forces, weapons tech, India vs world, US/China/Russia moves
   that affect India, global events that change everyday life (flights grounded, sanctions, wars).
 - Educational facts & India real-hero stories (a doctor, police officer or common person doing
-  something big), money/economy facts that matter to Indians.
+  something big), money/economy facts that matter to Indians, untold stories behind famous Indian
+  events/photos/wars (e.g. "who took this 26/11 photo"), history explained on its anniversary.
 NOT a fit: memes, dance, comedy skits, celebrity gossip, movie promotions, product ads,
 religious/political party content, pure entertainment, sports highlights.
 """
@@ -143,14 +144,20 @@ YT_BASE_QUERIES = [
     "India defence technology", "geopolitics India", "science breakthrough", "tech explained",
 ]
 
+# Fixed hashtags (always searched). Today's trending hashtags are added on top by
+# trending_insta_hashtags(), so event reels (e.g. a 26/11 story under #mumbaiattacks) are found.
 INSTA_HASHTAGS = [
-    "technews", "ainews", "techfacts",
-    "geopolitics", "indiandefence", "telugunews",
+    "technews", "ainews", "geopolitics", "indiandefence",
 ]
+IG_TREND_HASHTAGS = env_int("IG_TREND_HASHTAGS", 4)
+IG_RESULTS_PER_TREND_HASHTAG = env_int("IG_RESULTS_PER_TREND_HASHTAG", 8)
+# Creators whose latest reel is checked every day: tech pages + India explainer/story pages.
+# Add more without editing code: Actions variable IG_EXTRA_HANDLES = "handle1,handle2".
 INSTA_STARTER_HANDLES = [
     "varunmayya", "thinkschool", "abhiandniyu", "techburner", "trakintech",
     "beebomco", "ai.for.everyone", "johnnyharris", "vaibhavsisinty", "ishansharma7390",
-]
+    "veerexplains", "nicksaraev", "v.i.s.h.ai",
+] + [h.strip().lstrip("@") for h in (os.getenv("IG_EXTRA_HANDLES") or "").split(",") if h.strip()]
 
 NEWS_FEEDS = [
     ("Google News Tech (US)", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en"),
@@ -565,10 +572,42 @@ def reel_record(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def trending_insta_hashtags() -> list[str]:
+    """Today's India talking points (news, anniversaries, defence, tech) as Instagram hashtags."""
+    hints: list[str] = []
+    try:
+        rss = requests.get("https://trends.google.com/trending/rss?geo=IN", timeout=20).text
+        hints = re.findall(r"<title>(.*?)</title>", rss)[1:25]
+    except Exception as exc:
+        log(f"[IG TRENDS WARN] Google Trends: {exc}")
+    prompt = f"""Today is {NOW_IST:%d %B %Y} (India). Use Google Search.
+List the {IG_TREND_HASHTAGS + 2} topics Indians are talking about most in the last 48 hours that fit these pages:
+{NICHE}
+Include big anniversaries of national events (e.g. 26/11, Kargil, Pulwama), defence/geopolitics events,
+India real-hero stories, big tech/AI/science news. Skip cricket/sports, lotteries, movies, celebrities, party politics.
+Google Trends India right now (hints, may be noisy): {hints}
+For each topic give the ONE Instagram hashtag most used for it (no '#', lowercase, no spaces, e.g. "mumbaiattacks").
+Reply with ONLY the hashtags, comma separated, most viral first."""
+    try:
+        text = call_gemini(prompt, want_json=False, search=True)
+        tags = [re.sub(r"[^a-z0-9_]", "", t.strip().lower().lstrip("#")) for t in re.split(r"[,\n]", text)]
+        tags = [t for t in dict.fromkeys(tags) if 3 <= len(t) <= 40 and t not in INSTA_HASHTAGS]
+        log(f"[IG TRENDS] today's hashtags: {tags[:IG_TREND_HASHTAGS]}")
+        return tags[:IG_TREND_HASHTAGS]
+    except Exception as exc:
+        log(f"[IG TRENDS WARN] {exc}")
+        return []
+
+
 def instagram_discover() -> list[dict[str, Any]]:
     raw = apify_run("apify~instagram-hashtag-scraper",
                     {"hashtags": INSTA_HASHTAGS, "resultsType": "reels", "resultsLimit": IG_RESULTS_PER_HASHTAG},
                     len(INSTA_HASHTAGS) * IG_RESULTS_PER_HASHTAG)
+    trend_tags = trending_insta_hashtags()
+    if trend_tags:
+        raw += apify_run("apify~instagram-hashtag-scraper",
+                         {"hashtags": trend_tags, "resultsType": "reels", "resultsLimit": IG_RESULTS_PER_TREND_HASHTAG},
+                         len(trend_tags) * IG_RESULTS_PER_TREND_HASHTAG)
     raw += apify_run("apify~instagram-reel-scraper",
                      {"username": INSTA_STARTER_HANDLES, "resultsLimit": IG_RESULTS_PER_HANDLE},
                      len(INSTA_STARTER_HANDLES) * IG_RESULTS_PER_HANDLE)

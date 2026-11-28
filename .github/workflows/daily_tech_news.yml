@@ -82,6 +82,7 @@ jobs:
           IG_MIN_LIKES: ${{ vars.IG_MIN_LIKES }}
           IG_MIN_GAIN: ${{ vars.IG_MIN_GAIN }}
           IG_FAST_LIKES_PER_HOUR: ${{ vars.IG_FAST_LIKES_PER_HOUR }}
+          IG_EXTRA_HANDLES: ${{ vars.IG_EXTRA_HANDLES }}
           YT_MIN_VIEWS: ${{ vars.YT_MIN_VIEWS }}
           YT_MAX_SUBS: ${{ vars.YT_MAX_SUBS }}
           YT_MIN_OUTLIER: ${{ vars.YT_MIN_OUTLIER }}
