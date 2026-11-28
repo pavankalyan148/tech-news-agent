@@ -47,6 +47,8 @@ jobs:
           if [ "$HOUR" -lt 8 ] || [ "$HOUR" -ge 18 ]; then
             echo "Outside the 08:00-18:00 IST window (hour $HOUR), skipping late trigger"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # A queued run starts the instant the previous one ends, before GitHub marks it "success": wait first.
+          sleep 45
           # Count only today's successful Daily runs that started inside the window
           DONE=$(gh api "repos/${{ github.repository }}/actions/workflows/daily_tech_news.yml/runs?status=success&per_page=30"             --jq "[.workflow_runs[] | select(.display_title == \"Daily run\" and .id != ${{ github.run_id }}) | select((.created_at | fromdateiso8601 + 19800 | strftime(\"%Y-%m-%d\")) == \"$TODAY\") | select((.created_at | fromdateiso8601 + 19800 | strftime(\"%H\") | tonumber) >= 8 and (.created_at | fromdateiso8601 + 19800 | strftime(\"%H\") | tonumber) < 18)] | length")
           echo "Successful daily runs today (IST $TODAY): $DONE"
