@@ -377,7 +377,7 @@ def varun_recent_reels() -> list[dict[str, Any]]:
     reels = [r for r in (reel_record(it) for it in raw) if r and r["published"]]
     reels.sort(key=lambda r: r["published"], reverse=True)
     out = []
-    for r in reels[:5]:
+    for r in [x for x in reels if hours_since(x["published"]) <= 24 * 10][:5]:   # skip old pinned reels
         out.append({"hours_ago": round(hours_since(r["published"]), 1), "caption": r["caption"][:200],
                     "plays": r["plays"], "likes": r["likes"], "url": r["url"]})
     log(f"[VARUN] {len(out)} recent reels: " + " | ".join(f"{x['hours_ago']}h {x['caption'][:50]}" for x in out))
@@ -458,15 +458,23 @@ def fetch_videos(video_ids: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
+CHANNEL_COUNTRY: dict[str, str] = {}
+
+
 def fetch_subscribers(channel_ids: list[str]) -> dict[str, int]:
     subs: dict[str, int] = {}
     ids = list(dict.fromkeys(c for c in channel_ids if c))
     for i in range(0, len(ids), 50):
-        data = yt_get("channels", {"part": "statistics", "id": ",".join(ids[i:i + 50])})
+        data = yt_get("channels", {"part": "statistics,snippet", "id": ",".join(ids[i:i + 50])})
         for item in data.get("items", []):
             st = item.get("statistics", {})
             subs[item["id"]] = -1 if st.get("hiddenSubscriberCount") else int(st.get("subscriberCount", 0))
+            CHANNEL_COUNTRY[item["id"]] = (item.get("snippet", {}).get("country") or "").upper()
     return subs
+
+
+INDIC_SCRIPT = re.compile(r"[ऀ-෿]")   # Devanagari, Bengali, Telugu, Tamil, Kannada, Malayalam...
+PROMO = re.compile(r"(?i)(promo code|black friday|sponsored|discount|% off|use code|giveaway|unboxing|shop now)")
 
 
 def recent_viewer_comments(video_id: str, creator_id: str, hours: int = 3) -> int:
@@ -513,7 +521,12 @@ def youtube_candidates(hours: int) -> list[dict[str, Any]]:
     for v in out:
         v["subscribers"] = subs.get(v["channel_id"], -1)
         v["outlier"] = round(v["views"] / v["subscribers"], 2) if v["subscribers"] > 0 else 0
-    log(f"[YT] {hours}h India: {len(ids)} found -> {len(out)} long videos")
+    # India only: Indian channel, or title in an Indian script; never ads/promos.
+    india = [v for v in out
+             if (CHANNEL_COUNTRY.get(v["channel_id"]) == "IN" or INDIC_SCRIPT.search(v["title"]))
+             and not PROMO.search(v["title"] + " " + v["description"][:200])]
+    log(f"[YT] {hours}h: {len(ids)} found -> {len(out)} long videos -> {len(india)} Indian, no promos")
+    out = india
     return out
 
 
@@ -877,6 +890,8 @@ Reply in EXACTLY this format, nothing else:
     if not tech:  # tech (Varun style) names news outlets on purpose; only creators are banned
         out["script"] = re.sub(r"(?i)\b(according to|as per)\s+[A-Z][\w .&-]{1,40}[,:]?\s*", "", out["script"])
     out["fact_sources"] = sources
+    if not facts and "Gemini failed" not in out["script"]:
+        out["title"] = "[CHECK FACTS: research failed today] " + out.get("title", "")
     return out
 
 
