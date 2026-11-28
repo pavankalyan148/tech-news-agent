@@ -129,6 +129,40 @@ NOT a fit: memes, dance, comedy skits, celebrity gossip, movie promotions, produ
 religious/political party content, pure entertainment, sports highlights.
 """
 
+# INSTAGRAM = @dr.dhairyam reel type, NO tech (learned from its top reels, 28 Nov 2026:
+# Kalam birthday 4.2M, "13-year-old did what billionaires couldn't" 1.2M, Starlink vs Jio vs India 1.1M,
+# "Your finger is electric" 977K, Hyderabad doctor Rs12 lakh medicine to Rs18,000 520K,
+# "America grounded all flights" 503K, woman police brought 119 kids home 343K).
+IG_NICHE = """
+@dr.dhairyam reel type (Telugu audience, India first). NOT tech news, NOT AI tools.
+- India real heroes: a doctor, police officer, soldier, farmer, student or common person doing something big.
+- National icons & anniversaries: birthdays/death anniversaries of heroes (Kalam, Bose...), 26/11, Kargil,
+  Pulwama, untold stories behind famous Indian events/photos.
+- Young achievers: kids/students doing what adults or billionaires couldn't.
+- India vs the world / geopolitics & defence: India's power moves, US/China/Pakistan moves that affect India,
+  Indian diaspora news, world events that change everyday life (flights grounded, sanctions, wars).
+- Everyday science & body facts explained simply ("your finger is electric"), health/medicine wins for Indians.
+- Money/price shock stories that help Indians (Rs12 lakh medicine now Rs18,000).
+NOT a fit: tech/AI/gadget news, memes, dance, comedy, celebrity gossip, movies, product ads,
+party politics or religious preaching, sports highlights.
+"""
+
+# YOUTUBE = the top education (and tech) videos working in India right now.
+YT_NICHE = """
+Educational YouTube videos for an Indian audience: explainers, science, history, geopolitics, defence,
+economy/money, general knowledge, exam/UPSC-style current affairs, how-things-work, tech explained.
+NOT a fit: entertainment, vlogs, music, movie reviews/trailers, gaming streams, comedy, news-channel live
+streams, cricket/sports, religious discourse, party-political rants, pure product unboxing.
+"""
+
+VARUN_HANDLE = "thevarunmayya"
+VARUN_PICK_PATTERN = """How @thevarunmayya picks his daily tech reel (learned from his reels):
+- Hits = a once-in-a-generation event + a giant name (Anthropic/Claude, OpenAI, Nvidia/Jensen, Apple, Google,
+  Elon/SpaceX/Tesla, GTA/Rockstar, a famous unsolved problem solved, a record IPO/deal).
+- Mix: ~50% AI-lab mega news, ~25% pop-culture tech (games, phones, Elon), ~25% "magic" science/health.
+- He prefers the FIRST event (the news itself), not a follow-up angle. Story can be up to ~48 h old if huge.
+- One reel a day. Hook = "<giant name> + 1-2 shocking words" (e.g. "Nvidia has no Jensen ANYMORE")."""
+
 # Big media / news networks: never treated as a "small channel" outlier.
 BIG_MEDIA_BLOCKLIST = re.compile(
     r"\b(cnn|bbc|fox|nbc|abc news|cbs|msnbc|reuters|bloomberg|cnbc|al jazeera|sky news|"
@@ -147,17 +181,15 @@ YT_BASE_QUERIES = [
 # Fixed hashtags (always searched). Today's trending hashtags are added on top by
 # trending_insta_hashtags(), so event reels (e.g. a 26/11 story under #mumbaiattacks) are found.
 INSTA_HASHTAGS = [
-    "technews", "ainews", "geopolitics", "indiandefence",
+    "indianarmy", "geopolitics", "realhero", "telugunews",
 ]
 IG_TREND_HASHTAGS = env_int("IG_TREND_HASHTAGS", 4)
 IG_RESULTS_PER_TREND_HASHTAG = env_int("IG_RESULTS_PER_TREND_HASHTAG", 8)
-# Creators whose latest reel is checked every day: tech pages + India explainer/story pages.
+# Creators whose latest reel is checked every day: India explainer / story pages (dr.dhairyam type).
 # Add more without editing code: Actions variable IG_EXTRA_HANDLES = "handle1,handle2".
 INSTA_STARTER_HANDLES = [
-    "varunmayya", "thinkschool", "abhiandniyu", "techburner", "trakintech",
-    "beebomco", "ai.for.everyone", "johnnyharris", "vaibhavsisinty", "ishansharma7390",
-    "veerexplains", "nicksaraev", "v.i.s.h.ai",
-] + [h.strip().lstrip("@") for h in (os.getenv("IG_EXTRA_HANDLES") or "").split(",") if h.strip()]
+    "veerexplains", "thinkschool", "abhiandniyu", "johnnyharris", "vaibhavsisinty",
+] +[h.strip().lstrip("@") for h in (os.getenv("IG_EXTRA_HANDLES") or "").split(",") if h.strip()]
 
 NEWS_FEEDS = [
     ("Google News Tech (US)", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en"),
@@ -237,13 +269,13 @@ def call_gemini(prompt: str, want_json: bool = True, search: bool = False) -> An
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
-def niche_filter(items: list[dict[str, Any]], text_key: str, kind: str) -> dict[str, dict[str, Any]]:
+def niche_filter(items: list[dict[str, Any]], text_key: str, kind: str, niche: str = NICHE) -> dict[str, dict[str, Any]]:
     """Ask Gemini which items fit the niche AND are educational. Returns {id: {fit, reason}}."""
     if not items:
         return {}
     payload = [{"id": it["id"], "text": str(it.get(text_key, ""))[:300]} for it in items]
     prompt = f"""You screen {kind} for these pages:
-{NICHE}
+{niche}
 For EACH item decide: is it in the niche AND educational/informative (teaches, explains or reports
 something real), not entertainment? Be strict.
 Return JSON: {{"results": [{{"id": "...", "fit": true/false, "topic": "3-6 word topic", "reason": "max 12 words"}}]}}
@@ -339,21 +371,42 @@ def collect_news(hours: int) -> list[dict[str, Any]]:
     return items
 
 
+def varun_recent_reels() -> list[dict[str, Any]]:
+    """@thevarunmayya's newest reels (pinned ones skipped by sorting on post time)."""
+    raw = apify_run("apify~instagram-reel-scraper", {"username": [VARUN_HANDLE], "resultsLimit": 6}, 6)
+    reels = [r for r in (reel_record(it) for it in raw) if r and r["published"]]
+    reels.sort(key=lambda r: r["published"], reverse=True)
+    out = []
+    for r in reels[:5]:
+        out.append({"hours_ago": round(hours_since(r["published"]), 1), "caption": r["caption"][:200],
+                    "plays": r["plays"], "likes": r["likes"], "url": r["url"]})
+    log(f"[VARUN] {len(out)} recent reels: " + " | ".join(f"{x['hours_ago']}h {x['caption'][:50]}" for x in out))
+    return out
+
+
 def run_news_waterfall() -> tuple[dict[str, Any] | None, str]:
     last_story: dict[str, Any] | None = None
+    varun = safe(varun_recent_reels, default=[]) or []
     for hours in WINDOWS_HOURS:
         items = collect_news(hours)
         log(f"[NEWS] {hours}h window: {len(items)} headlines")
         if not items:
             continue
         prompt = f"""You are the news editor for Dhairyam Tech (Telugu, India-first audience).
-Below are tech/science headlines from the last {hours} hours from many outlets.
-1. Group headlines that are about the SAME story.
-2. A story is "booming" if many DIFFERENT outlets cover it (count distinct outlets) and/or it has big
-   Hacker News points. Skip deals, reviews, listicles, minor app updates and stock-price noise.
-3. Prefer stories an Indian viewer would care about. Pick the ONE biggest story.
+Our tech reels copy the topic PATTERN of @thevarunmayya. Goal: pick the story he is most likely to post as
+his NEXT reel, so we post it in Telugu first.
+{VARUN_PICK_PATTERN}
+His latest reels (hours ago, caption, plays): {json.dumps(varun, ensure_ascii=False)}
+Rules:
+1. Group headlines about the SAME story; count distinct outlets (and Hacker News points).
+2. Do NOT pick a story he already covered in the reels above, UNLESS he posted it in the last 24 h
+   (then it is a valid "Telugu first" pick of his exact topic).
+3. Pick the ONE story that best fits his pattern: giant name + once-in-a-generation event, or "magic"
+   science, covered by many outlets. Skip deals, reviews, listicles, minor app updates, stock noise.
+Below are tech/science headlines from the last {hours} hours.
 Return JSON: {{"title": "...", "summary": "2 sentences of what happened", "outlets": ["distinct outlet names"],
-"outlet_count": N, "urls": ["2-4 exact URLs from the list"], "why_booming": "1 sentence"}}
+"outlet_count": N, "urls": ["2-4 exact URLs from the list"], "why_booming": "1 sentence",
+"why_varun_next": "1 sentence: why this is his likely next reel"}}
 HEADLINES: {json.dumps(items[:150], ensure_ascii=False)}"""
         try:
             story = call_gemini(prompt)
@@ -365,7 +418,7 @@ HEADLINES: {json.dumps(items[:150], ensure_ascii=False)}"""
         story["urls"] = [u for u in story.get("urls", []) if u in valid_urls] or [items[0]["url"]]
         story["outlet_count"] = count
         if count >= NEWS_MIN_SOURCES:
-            return story, f"{hours}h window, covered by {count} outlets"
+            return story, f"{hours}h window, {count} outlets; Varun-next pick: {story.get('why_varun_next', '')}"
         log(f"[NEWS] best story in {hours}h only has {count} outlets; widening window.")
         last_story = story
     if last_story:
@@ -374,16 +427,11 @@ HEADLINES: {json.dumps(items[:150], ensure_ascii=False)}"""
 
 
 # =============================================================================
-# 2. YOUTUBE: SMALL-CHANNEL LONG-VIDEO OUTLIERS (12 h -> 24 h -> 48 h)
+# 2. YOUTUBE: TOP EDUCATION + TECH VIDEOS WORKING IN INDIA (24 h -> 48 h)
 # =============================================================================
-def trending_queries() -> list[str]:
-    prompt = f"""Give 6 short YouTube search queries (2-5 words) for what is trending RIGHT NOW
-({NOW_IST.strftime('%d %b %Y')}) in this niche: {NICHE}
-Return JSON: {{"queries": ["..."]}}"""
-    try:
-        return [q for q in call_gemini(prompt).get("queries", []) if isinstance(q, str)][:6]
-    except Exception:
-        return []
+YT_CATEGORIES = {"27": "Education", "28": "Science & Technology"}
+YT_INDIA_QUERIES = ["explained", "facts", "history", "geopolitics", "science", "current affairs",
+                    "telugu explained", "tech explained"]
 
 
 def fetch_videos(video_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -437,81 +485,56 @@ def recent_viewer_comments(video_id: str, creator_id: str, hours: int = 3) -> in
     return n
 
 
-def youtube_candidates(queries: list[str], hours: int) -> list[dict[str, Any]]:
+def youtube_candidates(hours: int) -> list[dict[str, Any]]:
+    """Most-viewed India videos in Education / Science & Tech posted in the last `hours`."""
     after = (NOW_UTC - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    base = {"part": "id", "type": "video", "order": "viewCount", "maxResults": 50,
+            "publishedAfter": after, "regionCode": "IN"}
+    calls = [{"videoCategoryId": c} for c in YT_CATEGORIES] + [{"q": q} for q in YT_INDIA_QUERIES]
     ids: list[str] = []
-    for q in queries:
-        for extra in ({}, {"regionCode": "IN"}):
-            try:
-                data = yt_get("search", {"part": "id", "type": "video", "order": "viewCount", "maxResults": 50,
-                                         "publishedAfter": after, "q": q, **extra})
-                ids += [it["id"]["videoId"] for it in data.get("items", []) if it["id"].get("videoId")]
-            except Exception as exc:
-                log(f"[YT SEARCH WARN] {q}: {exc}")
-                if "quota" in str(exc).lower():
-                    return []
+    for extra in calls:
+        try:
+            data = yt_get("search", {**base, **extra})
+            ids += [it["id"]["videoId"] for it in data.get("items", []) if it["id"].get("videoId")]
+        except Exception as exc:
+            log(f"[YT SEARCH WARN] {extra}: {exc}")
+            if "quota" in str(exc).lower():
+                break
     ids = list(dict.fromkeys(ids))
     videos = fetch_videos(ids)
-    subs = fetch_subscribers([v["channel_id"] for v in videos.values()])
-
     out = []
     for v in videos.values():
-        v["subscribers"] = subs.get(v["channel_id"], -1)
-        v["hours_live"] = round(hours_since(v["published"]), 1)
-        v["outlier"] = round(v["views"] / v["subscribers"], 2) if v["subscribers"] > 0 else 0
+        v["hours_live"] = max(round(hours_since(v["published"]), 1), 0.5)
         v["views_per_hour"] = int(v["views"] / v["hours_live"])
-        if v["is_live"] or v["duration_sec"] < YT_MIN_DURATION_SEC:
-            continue                      # long videos only
-        if v["subscribers"] <= 0 or v["subscribers"] > YT_MAX_SUBS:
-            continue                      # small channels only (hidden subs skipped)
-        if BIG_MEDIA_BLOCKLIST.search(v["channel"]):
-            continue                      # never news networks / big media
+        if v["is_live"] or v["duration_sec"] < YT_MIN_DURATION_SEC or v["hours_live"] > hours:
+            continue                      # long, finished videos from the window only
         out.append(v)
-    log(f"[YT] {hours}h: {len(ids)} found -> {len(out)} small-channel long videos")
+    subs = fetch_subscribers([v["channel_id"] for v in out])
+    for v in out:
+        v["subscribers"] = subs.get(v["channel_id"], -1)
+        v["outlier"] = round(v["views"] / v["subscribers"], 2) if v["subscribers"] > 0 else 0
+    log(f"[YT] {hours}h India: {len(ids)} found -> {len(out)} long videos")
     return out
 
 
 def run_youtube_waterfall() -> tuple[list[dict[str, Any]], str]:
-    queries = list(dict.fromkeys(trending_queries() + YT_BASE_QUERIES))[:10]
-    log(f"[YT] queries: {queries}")
-    # One 48h search (saves API quota), then check 12h -> 24h -> 48h windows locally.
-    cands = youtube_candidates(queries, max(WINDOWS_HOURS))
-    screen = niche_filter(cands, "title", "YouTube videos")
-    all_fits = []
-    for v in cands:
-        s = screen.get(v["id"], {})
-        if s.get("fit"):
-            v["topic"], v["fit_reason"] = s.get("topic", ""), s.get("reason", "")
-            all_fits.append(v)
-    relaxed_pool: list[dict[str, Any]] = all_fits
-    checked: set[str] = set()
-    for hours in WINDOWS_HOURS:
-        fits = [v for v in all_fits if v["hours_live"] <= hours]
-        strict = [v for v in fits if v["views"] >= YT_MIN_VIEWS and v["outlier"] >= YT_MIN_OUTLIER
-                  and v["id"] not in checked]
-        strict.sort(key=lambda v: (v["outlier"], v["views_per_hour"]), reverse=True)
-        winners = []
-        for v in strict[:8]:
-            checked.add(v["id"])
-            v["recent_comments"] = recent_viewer_comments(v["id"], v["channel_id"])
-            if v["recent_comments"] >= YT_MIN_RECENT_COMMENTS:
-                winners.append(v)
-        if winners:
-            return winners[:3], (f"{hours}h: small channel (<= {YT_MAX_SUBS:,} subs), long video, "
-                                 f"{YT_MIN_VIEWS:,}+ views, views >= {YT_MIN_OUTLIER}x subs, "
-                                 f"{YT_MIN_RECENT_COMMENTS}+ viewer comments in 3h")
-
-    # Relaxed (still small channels + niche): best outlier ratio. Clearly labelled in the sheet.
-    seen, relaxed = set(), []
-    for v in sorted(relaxed_pool, key=lambda v: (v["outlier"], v["views"]), reverse=True):
-        if v["id"] not in seen:
-            seen.add(v["id"])
-            if "recent_comments" not in v:
-                v["recent_comments"] = recent_viewer_comments(v["id"], v["channel_id"])
-            relaxed.append(v)
-        if len(relaxed) >= 3:
-            break
-    return relaxed, "RELAXED 48h: no video passed all rules; best small-channel outliers shown"
+    for hours in (24, 48):
+        cands = sorted(youtube_candidates(hours), key=lambda v: v["views"], reverse=True)[:60]
+        screen = niche_filter(cands, "title", "YouTube videos (India)", YT_NICHE)
+        fits = []
+        for v in cands:
+            s = screen.get(v["id"], {})
+            if s.get("fit"):
+                v["topic"], v["fit_reason"] = s.get("topic", ""), s.get("reason", "")
+                fits.append(v)
+        strong = [v for v in fits if v["views"] >= YT_MIN_VIEWS]
+        if strong:
+            strong.sort(key=lambda v: (v["views_per_hour"], v["views"]), reverse=True)
+            return strong[:3], f"{hours}h India top education/tech: {YT_MIN_VIEWS:,}+ views, ranked by views/hour"
+        if fits and hours == 48:
+            fits.sort(key=lambda v: v["views_per_hour"], reverse=True)
+            return fits[:3], f"RELAXED 48h: no education video hit {YT_MIN_VIEWS:,} views; fastest shown"
+    return [], "No India education video found"
 
 
 def recheck_youtube(videos: list[dict[str, Any]]) -> None:
@@ -582,9 +605,10 @@ def trending_insta_hashtags() -> list[str]:
         log(f"[IG TRENDS WARN] Google Trends: {exc}")
     prompt = f"""Today is {NOW_IST:%d %B %Y} (India). Use Google Search.
 List the {IG_TREND_HASHTAGS + 2} topics Indians are talking about most in the last 48 hours that fit these pages:
-{NICHE}
-Include big anniversaries of national events (e.g. 26/11, Kargil, Pulwama), defence/geopolitics events,
-India real-hero stories, big tech/AI/science news. Skip cricket/sports, lotteries, movies, celebrities, party politics.
+{IG_NICHE}
+Include birthdays/anniversaries of national heroes and events (e.g. Kalam, 26/11, Kargil), defence/geopolitics
+events, India real-hero and young-achiever stories, world events hitting Indians. NO tech/AI news.
+Skip cricket/sports, lotteries, movies, celebrities, party politics.
 Google Trends India right now (hints, may be noisy): {hints}
 For each topic give the ONE Instagram hashtag most used for it (no '#', lowercase, no spaces, e.g. "mumbaiattacks").
 Reply with ONLY the hashtags, comma separated, most viral first."""
@@ -634,7 +658,7 @@ def run_instagram_snapshot() -> tuple[list[dict[str, Any]], str]:
         viral = sorted(fresh, key=lambda r: r["likes_per_hour"], reverse=True)[:IG_MAX_TRACKED]
         label = "RELAXED: no reel hit the like rule; tracking fastest reels"
 
-    screen = niche_filter(viral, "caption", "Instagram reels")
+    screen = niche_filter(viral, "caption", "Instagram reels", IG_NICHE)
     tracked = []
     for r in sorted(viral, key=lambda r: r["likes_per_hour"], reverse=True):
         s = screen.get(r["id"], {})
@@ -705,6 +729,44 @@ Deeni nunchi manam nerchukovalsindi enti?
 Mee passwords ni regular ga change cheyandi, unknown emails & links ni nammakandi! Ilanti genuine tech & cyber updates kosam follow avvandi, and mee opinion kinda comments lo cheppandi!"""
 
 
+TECH_STYLE = """VARUN MAYYA TECH-REEL STYLE, in Tenglish (Telugu written in English letters, tech words in English).
+- Newsroom tone, not drama: calm, confident, fast. Let the facts be the shock. No filler, no greeting.
+- Line 1 = the headline itself in 3-6 words, like breaking news ("Jensen Huang resign chesaru!").
+- Line 2 = one open loop ("Chivarlo inko pedda shock undi, miss avvakandi.").
+- ONE fact per short line (1-2 seconds each), so every line can carry a new visual. Exact numbers, dates, %.
+- Name the NEWS OUTLET in the line when a fact comes from it ("New York Times report prakaram,",
+  "Bloomberg report idi.") because its screenshot goes on screen. NEVER name a creator/YouTuber/Instagram page.
+- Chronology with a turn: what happened -> how it started -> the twist ("Ikkada asalu shock enti ante...")
+  -> the bigger picture (market, competition, geopolitics).
+- One everyday analogy ("Simple ga cheppali ante, ..."), one honesty line if anything is only a claim
+  ("Kani jagrtha ga vinandi. Ivi claims matrame."), one tight India line ("Mana India ki enduku important ante?")
+  with money in rupees.
+- End: one debate question + "Comment lo cheppandi." + "Daily tech news kosam Dhairyam.tech ni follow avvandi."
+- 800-1,250 characters. Never copy any creator's wording."""
+
+TECH_EXAMPLE = """Nvidia scandal lo China spy twist!
+Chivarlo Nvidia ki inko pedda shock undi, miss avvakandi.
+New York Times report prakaram,
+Jensen Huang scandal lo unna Alice Huang,
+2025 spring nundi ee autumn varaku,
+China Ministry of State Security officer tho touch lo unnaru.
+Ikkada asalu shock enti ante...
+Ade time lo aame company Megaspeed, bhaari ga Nvidia AI chips konindi.
+Vaatilo konni China ki chera vachani US officials anumanam.
+Simple ga cheppali ante, bank locker key unna vyakthi, dongala gang tho phone lo touch lo unnatlu.
+Kani jagrtha ga vinandi. Ivi intelligence reports lo claims matrame. Court lo inka prove avvaledu.
+Ippudu chivari shock:
+Nvidia kotha CEO kosam, Arm CEO Rene Haas ni approach chesaru.
+Aayana No cheppesaru. 2033 varaku Arm lone untanani contract sign chesaru.
+Bloomberg report idi.
+Mana India ki enduku important ante?
+Mana AI startups, data centres anni Nvidia GPUs meede nadustunnayi.
+Top lo leader lekapothe, chip prices, supply rendu shake avvachu.
+Ippudu question: Nvidia ni evaru lead cheyyali?
+Comment lo cheppandi.
+Daily tech news kosam Dhairyam.tech ni follow avvandi."""
+
+
 def research(topic_hint: str, ref_urls: list[str]) -> tuple[str, list[str]]:
     """Google-Search-grounded research. Returns (facts text, real source links from grounding)."""
     prompt = f"""Use Google Search to research this story (today is {NOW_IST.strftime('%d %b %Y')}).
@@ -755,28 +817,33 @@ def parse_script_reply(text: str) -> dict[str, Any]:
     return {"title": title.splitlines()[0] if title else "", "script": section("SCRIPT"), "new_points_added": added}
 
 
-def script_problems(script: str) -> list[str]:
+def script_problems(script: str, tech: bool = False) -> list[str]:
     probs = []
-    if len(script) < 800:
-        probs.append(f"too short ({len(script)} chars, need 900-1,500)")
+    lo, hi = (750, 1350) if tech else (800, 99_999)
+    if len(script) < lo:
+        probs.append(f"too short ({len(script)} chars, need {'800-1,250' if tech else '900-1,500'})")
+    if len(script) > hi:
+        probs.append(f"too long ({len(script)} chars, max 1,250)")
     if len(re.findall(r"\d", script)) < 3:
         probs.append("not enough exact numbers/facts")
-    if script.count("\n") < 4:
-        probs.append("no line breaks / numbered list")
-    if re.search(r"(?i)\b(according to|prakaram|ee video lo|ee reel lo)\b", script):
-        probs.append("mentions the source/creator (not allowed)")
+    if script.count("\n") < (10 if tech else 4):
+        probs.append("not enough line breaks (one fact per line)")
+    banned = (r"(?i)(varun|mayya|ee video lo|ee reel lo|youtuber|instagram page)" if tech
+              else r"(?i)\b(according to|prakaram|ee video lo|ee reel lo)\b")
+    if re.search(banned, script):
+        probs.append("mentions the creator/page we got the idea from (not allowed)")
     return probs
 
 
-def write_script(kind: str, topic_hint: str, ref_urls: list[str] | None = None) -> dict[str, Any]:
+def write_script(kind: str, topic_hint: str, ref_urls: list[str] | None = None, tech: bool = False) -> dict[str, Any]:
     ref_urls = ref_urls or []
     facts, sources = research(topic_hint, ref_urls)
     base = f"""You write {kind} scripts for the Dhairyam pages (Telugu audience, India first).
-{STYLE}
+{TECH_STYLE if tech else STYLE}
 
 EXAMPLE OF A PERFECT SCRIPT (copy this style, NOT its topic):
 <<<
-{STYLE_EXAMPLE}
+{TECH_EXAMPLE if tech else STYLE_EXAMPLE}
 >>>
 
 TOPIC (from a viral post — use only the topic, do NOT copy it, do NOT mention who posted it):
@@ -800,14 +867,15 @@ Reply in EXACTLY this format, nothing else:
         except Exception as exc:
             log(f"[SCRIPT WARN] {exc}")
             break
-        probs = script_problems(out.get("script", ""))
+        probs = script_problems(out.get("script", ""), tech)
         if not probs:
             break
         log(f"[SCRIPT] retry {attempt + 1}: {probs}")
         prompt = base + "\n\nYOUR LAST DRAFT HAD PROBLEMS: " + "; ".join(probs) + ". Fix them and reply again in the same format."
     if not out.get("script"):
         out = {"title": topic_hint[:80], "script": "[Gemini failed to write this script today]", "new_points_added": []}
-    out["script"] = re.sub(r"(?i)\b(according to|as per)\s+[A-Z][\w .&-]{1,40}[,:]?\s*", "", out["script"])
+    if not tech:  # tech (Varun style) names news outlets on purpose; only creators are banned
+        out["script"] = re.sub(r"(?i)\b(according to|as per)\s+[A-Z][\w .&-]{1,40}[,:]?\s*", "", out["script"])
     out["fact_sources"] = sources
     return out
 
@@ -945,7 +1013,7 @@ def main() -> None:
     # Scripts (topic only -> research -> our own version)
     s_ig = write_script("Instagram Reel", f"{ig[0].get('topic', '')}: {ig[0]['caption']}") if ig else None
     s_yt = write_script("YouTube long video", f"{yt[0].get('topic', '')}: {yt[0]['title']}. {yt[0]['description']}") if yt else None
-    s_news = (write_script("tech news reel", f"{news['title']}. {news.get('summary', '')}", news.get("urls", []))
+    s_news = (write_script("tech news reel", f"{news['title']}. {news.get('summary', '')}", news.get("urls", []), tech=True)
               if news else None)
 
     block = (f"==================================================\n"
